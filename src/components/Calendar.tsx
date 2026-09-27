@@ -21,8 +21,9 @@ import Calendar from 'react-calendar';
 import 'react-calendar/dist/Calendar.css';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { useActivePlot } from '../contexts/ActivePlotContext';
-import { db, collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, handleFirestoreError, OperationType, orderBy, getDocs } from '../firebase';
+import { db, collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, serverTimestamp, handleFirestoreError, OperationType, orderBy, getDocs, writeBatch } from '../firebase';
 import { cn } from '@/src/lib/utils';
+import { buildWateringSchedule } from '../lib/wateringSchedule';
 import { toast } from 'sonner';
 import { format, isSameDay, parseISO } from 'date-fns';
 
@@ -127,51 +128,51 @@ export default function GardenCalendar() {
     const toastId = toast.loading('Generating consolidated watering schedule...');
     
     try {
-      // 1. Fetch plants
-      const q = query(collection(db, 'plants'), where('ownerUid', '==', user.uid));
+      // Live plants are inhabitants. The legacy `plants` collection is empty
+      // for current gardens, so reading it rebuilt nothing — after the old
+      // code had already deleted every "Watering Day" event.
+      const q = query(collection(db, 'inhabitants'), where('ownerUid', '==', user.uid));
       const snapshot = await getDocs(q);
-      const plants = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as any));
-      
-      // 2. Aggregation Phase: Group plants by date
-      const wateringMap: Record<string, string[]> = {};
-      plants.forEach(plant => {
-        if (plant.nextWatering) {
-          if (!wateringMap[plant.nextWatering]) {
-            wateringMap[plant.nextWatering] = [];
-          }
-          wateringMap[plant.nextWatering].push(plant.name);
-        }
-      });
+      const days = buildWateringSchedule(snapshot.docs.map((d) => d.data()));
 
-      // 3. Cleanup: Delete existing "Watering Day" events to prevent duplicates
+      // Nothing scheduled in the live garden: leave existing Watering Day
+      // events alone. The previous sync deleted them first, then wrote
+      // nothing when the legacy collection was empty.
+      if (days.length === 0) {
+        toast.success('No watering dates to sync yet.', { id: toastId });
+        return;
+      }
+
       const existingQ = query(
-        collection(db, 'calendar_events'), 
+        collection(db, 'calendar_events'),
         where('ownerUid', '==', user.uid),
         where('title', '==', 'Watering Day')
       );
       const existingSnapshot = await getDocs(existingQ);
-      for (const d of existingSnapshot.docs) {
-        await deleteDoc(doc(db, 'calendar_events', d.id));
-      }
 
-      // 4. Creation Phase: Create consolidated events
-      let count = 0;
-      for (const [dateStr, plantNames] of Object.entries(wateringMap)) {
-        const description = plantNames.map(p => `• ${p}`).join('\n');
-        await addDoc(collection(db, 'calendar_events'), {
+      // One batch: write the replacement schedule and drop the previous
+      // generated events together. A rules rejection rolls the whole sync
+      // back and leaves the existing events in place.
+      const batch = writeBatch(db);
+      for (const day of days) {
+        const ref = doc(collection(db, 'calendar_events'));
+        batch.set(ref, {
           ownerUid: user.uid,
           title: 'Watering Day',
-          description: description,
-          date: dateStr,
+          description: day.description,
+          date: day.date,
           type: 'Watering',
           priority: 'High',
           recurrence: 'None',
-          createdAt: serverTimestamp()
+          createdAt: serverTimestamp(),
         });
-        count++;
       }
-      
-      toast.success(`Generated ${count} consolidated watering events!`, { id: toastId });
+      for (const d of existingSnapshot.docs) {
+        batch.delete(d.ref);
+      }
+      await batch.commit();
+
+      toast.success(`Generated ${days.length} consolidated watering events!`, { id: toastId });
     } catch (error) {
       console.error('Schedule generation error:', error);
       toast.error('Failed to generate schedule', { id: toastId });
