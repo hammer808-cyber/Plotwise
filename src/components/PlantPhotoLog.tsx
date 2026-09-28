@@ -4,7 +4,7 @@ import { Camera, Images, X, Trash2, Check, Loader2, ImagePlus } from 'lucide-rea
 import { format } from 'date-fns';
 import { deleteObject } from 'firebase/storage';
 import {
-  db, collection, query, orderBy, onSnapshot, addDoc, deleteDoc, doc,
+  db, collection, query, where, onSnapshot, addDoc, deleteDoc, doc,
   serverTimestamp, handleFirestoreError, OperationType, storage, ref,
 } from '../firebase';
 import { useFirebase } from '../contexts/FirebaseContext';
@@ -19,6 +19,11 @@ export interface PlantPhoto {
   caption?: string;
   createdAt?: any;
   ownerUid: string;
+}
+
+function photoTime(photo: PlantPhoto): number {
+  const created = photo.createdAt as { toMillis?: () => number } | undefined;
+  return typeof created?.toMillis === 'function' ? created.toMillis() : 0;
 }
 
 interface Props {
@@ -45,16 +50,22 @@ export default function PlantPhotoLog({ plantId, plantName, currentImage, onSetP
   const galleryInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (!plantId) return;
+    if (!plantId || !user) return;
+    // Photo rules allow a read only when ownerUid matches. A bare orderBy
+    // query is rejected, so uploads succeed and the timeline stays empty.
     const q = query(
       collection(db, 'inhabitants', plantId, 'photos'),
-      orderBy('createdAt', 'desc')
+      where('ownerUid', '==', user.uid)
     );
     const unsub = onSnapshot(q, (snap) => {
-      setPhotos(snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PlantPhoto, 'id'>) })));
+      const list = snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<PlantPhoto, 'id'>) }));
+      list.sort((a, b) => photoTime(b) - photoTime(a));
+      setPhotos(list);
+    }, () => {
+      toast.error('Could not load the photo log');
     });
     return unsub;
-  }, [plantId]);
+  }, [plantId, user]);
 
   const savePhoto = async (file: File) => {
     if (!user) return;

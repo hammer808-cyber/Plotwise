@@ -18,6 +18,7 @@ import HealthCheckWizard from './HealthCheckWizard';
 import { getPlantInfo } from '../constants/plants';
 import PlantPhotoLog from './PlantPhotoLog';
 import { PLANT_PLACEHOLDER } from '../lib/plantImage';
+import { rowsForPlant } from '../lib/plantRecords';
 
 export default function PlantDetail() {
   const { user } = useFirebase();
@@ -71,7 +72,7 @@ export default function PlantDetail() {
   });
 
   useEffect(() => {
-    if (!id) return;
+    if (!id || !user) return;
 
     const unsubscribe = onSnapshot(doc(db, 'inhabitants', id), (docSnap) => {
       if (docSnap.exists()) {
@@ -98,10 +99,15 @@ export default function PlantDetail() {
       setLoading(false);
     });
 
-    // Fetch treatments for this plant
-    const treatmentsQ = query(collection(db, 'treatments'), where('plantId', '==', id));
+    // Rules require ownerUid == auth.uid on every list query (rules are not
+    // filters). A plantId-only query is rejected, so saved treatments never
+    // load. Scope by owner, then keep this plant's rows.
+    const treatmentsQ = query(collection(db, 'treatments'), where('ownerUid', '==', user.uid));
     const unsubscribeTreatments = onSnapshot(treatmentsQ, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const list = rowsForPlant(
+        snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+        id
+      );
       setTreatments(list.sort((a: any, b: any) => {
         const dateA = a.createdAt?.toDate?.() || new Date(0);
         const dateB = b.createdAt?.toDate?.() || new Date(0);
@@ -111,10 +117,12 @@ export default function PlantDetail() {
       handleFirestoreError(error, OperationType.LIST, 'treatments');
     });
 
-    // Fetch task history for this plant
-    const historyQ = query(collection(db, 'task_history'), where('plantId', '==', id));
+    const historyQ = query(collection(db, 'task_history'), where('ownerUid', '==', user.uid));
     const unsubscribeHistory = onSnapshot(historyQ, (snapshot) => {
-      const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+      const list = rowsForPlant(
+        snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+        id
+      );
       setTaskHistory(list.sort((a: any, b: any) => {
         const dateA = a.completionDate?.toDate?.() || new Date(0);
         const dateB = b.completionDate?.toDate?.() || new Date(0);
@@ -124,10 +132,12 @@ export default function PlantDetail() {
       handleFirestoreError(error, OperationType.LIST, 'task_history');
     });
 
-    // Fetch active tasks for this plant
-    const tasksQ = query(collection(db, 'tasks'), where('plantId', '==', id));
+    const tasksQ = query(collection(db, 'tasks'), where('ownerUid', '==', user.uid));
     const unsubscribeTasks = onSnapshot(tasksQ, (snapshot) => {
-      setActiveTasks(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
+      setActiveTasks(rowsForPlant(
+        snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })),
+        id
+      ));
     }, (error) => {
       handleFirestoreError(error, OperationType.LIST, 'tasks');
     });
