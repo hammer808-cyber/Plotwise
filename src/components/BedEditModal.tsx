@@ -6,6 +6,7 @@ import { motion } from 'motion/react';
 import { X, Check, Minus, Plus } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import type { Inhabitant } from '../types';
+import { plantOccupiesBed } from '../lib/plotStats';
 
 /** Minimal bed shape — works with PlotDetail's Planter and BedDetail's Bed. */
 export interface BedLike {
@@ -124,16 +125,9 @@ export default function BedEditModal({ bed, cols, rows, otherBeds, plants, onClo
       // Pull riders back inside the new footprint (shrinking orphans edge plants).
       const bx = bed.gridPosition.x;
       const by = bed.gridPosition.y;
-      const riders = plants.filter(
-        (p) =>
-          p.planterId === bed.id ||
-          (!p.planterId &&
-            p.gridPosition &&
-            p.gridPosition.x >= bx &&
-            p.gridPosition.x < bx + bed.size.w &&
-            p.gridPosition.y >= by &&
-            p.gridPosition.y < by + bed.size.h)
-      );
+      // Rail plants live at (0, 0) with no planterId. A bed that starts at the
+      // origin must not adopt them — that stacks the whole rail into one cell.
+      const riders = plants.filter((p) => plantOccupiesBed(p, bed));
       for (const r of riders) {
         const rx = Math.max(bx, Math.min(bx + w - 1, r.gridPosition?.x ?? bx));
         const ry = Math.max(by, Math.min(by + h - 1, r.gridPosition?.y ?? by));

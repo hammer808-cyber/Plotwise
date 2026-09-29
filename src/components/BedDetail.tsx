@@ -4,6 +4,7 @@ import { doc, onSnapshot, collection, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { averageVigor } from '../lib/vigor';
+import { plantOccupiesBed } from '../lib/plotStats';
 import { useActivePlot } from '../contexts/ActivePlotContext';
 import { ArrowLeft, Leaf, Ruler, Activity, Plus, Stethoscope, Pencil, Copy } from 'lucide-react';
 import { toast } from 'sonner';
@@ -143,16 +144,7 @@ export default function BedDetail() {
     );
   }
 
-  const bedPlants = plants.filter(
-    (p) =>
-      p.planterId === bed.id ||
-      (!p.planterId &&
-        p.gridPosition &&
-        p.gridPosition.x >= bed.gridPosition.x &&
-        p.gridPosition.x < bed.gridPosition.x + bed.size.w &&
-        p.gridPosition.y >= bed.gridPosition.y &&
-        p.gridPosition.y < bed.gridPosition.y + bed.size.h)
-  );
+  const bedPlants = plants.filter((p) => plantOccupiesBed(p, bed));
   const bedVigor = averageVigor(bedPlants);
 
   /**
