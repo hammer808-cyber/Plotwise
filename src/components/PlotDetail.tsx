@@ -68,6 +68,7 @@ import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import BedEditModal from './BedEditModal';
 import { isPlanted, countPlanted, countWaiting } from '../lib/plotStats';
+import { rotateBedClockwise } from '../lib/bedGeometry';
 import { duplicateBed } from '../lib/duplicateBed';
 import { recalculateVigor, refreshStaleVigor, averageVigor } from '../lib/vigor';
 import WeedWarriorWizard from './WeedWarriorWizard';
@@ -527,6 +528,13 @@ export default function PlotDetail() {
     const newY = Math.max(0, Math.min(ROWS - planter.size.h, rawY));
     if (newX === planter.gridPosition.x && newY === planter.gridPosition.y) return false;
 
+    // Drag used to skip this check (tap and nudge already had it), so a bed
+    // could be dropped on top of another and the two footprints merged.
+    if (bedsOverlap(newX, newY, planter.size.w, planter.size.h, planter.id)) {
+      toast.warning("Can't move there — another bed is in the way.");
+      return false;
+    }
+
     try {
       await updateDoc(doc(db, 'planters', planter.id), {
         gridPosition: { x: newX, y: newY }
@@ -726,31 +734,57 @@ export default function PlotDetail() {
   const rotatePlanter = async (id: string) => {
     const planter = planters.find(p => p.id === id);
     if (!planter) return;
-    // 90-degree rotation: swap width and height, then pull back inside the plot
-    const newSize = { w: planter.size.h, h: planter.size.w };
-    const newX = Math.max(0, Math.min(COLS - newSize.w, planter.gridPosition.x));
-    const newY = Math.max(0, Math.min(ROWS - newSize.h, planter.gridPosition.y));
+    const riders = inhabitants.filter(p =>
+      p.planterId === id ||
+      (!p.planterId && p.gridPosition &&
+        p.gridPosition.x >= planter.gridPosition.x && p.gridPosition.x < planter.gridPosition.x + planter.size.w &&
+        p.gridPosition.y >= planter.gridPosition.y && p.gridPosition.y < planter.gridPosition.y + planter.size.h)
+    );
+    // Swap the footprint and turn each plant with it. Clamping into the new
+    // rectangle stacked every plant past the short edge onto one row.
+    const turned = rotateBedClockwise({
+      bed: {
+        x: planter.gridPosition.x,
+        y: planter.gridPosition.y,
+        w: planter.size.w,
+        h: planter.size.h,
+      },
+      plants: riders.map((r) => ({
+        id: r.id,
+        x: r.gridPosition?.x ?? planter.gridPosition.x,
+        y: r.gridPosition?.y ?? planter.gridPosition.y,
+      })),
+      cols: COLS,
+      rows: ROWS,
+      otherBeds: planters
+        .filter((p) => p.id !== id)
+        .map((p) => ({ x: p.gridPosition.x, y: p.gridPosition.y, w: p.size.w, h: p.size.h })),
+    });
+    if (turned.ok === false) {
+      toast.warning(
+        turned.reason === 'overlap'
+          ? "Can't rotate — the bed would land on another bed."
+          : "Can't rotate — the bed wouldn't fit in the plot that way."
+      );
+      return;
+    }
     try {
       await updateDoc(doc(db, 'planters', id), {
-        size: newSize,
-        gridPosition: { x: newX, y: newY }
+        size: turned.size,
+        gridPosition: turned.origin,
       });
-      // Plants riding in the bed keep riding: shift them by the same delta the
-      // bed moved, clamped inside the bed's new footprint so the arrangement
-      // survives the rotation instead of stacking at the origin.
-      const dx = newX - planter.gridPosition.x;
-      const dy = newY - planter.gridPosition.y;
-      const riders = inhabitants.filter(p =>
-        p.planterId === id ||
-        (!p.planterId && p.gridPosition &&
-          p.gridPosition.x >= planter.gridPosition.x && p.gridPosition.x < planter.gridPosition.x + planter.size.w &&
-          p.gridPosition.y >= planter.gridPosition.y && p.gridPosition.y < planter.gridPosition.y + planter.size.h)
-      );
-      for (const r of riders) {
-        const rx = Math.max(newX, Math.min(newX + newSize.w - 1, (r.gridPosition?.x || 0) + dx));
-        const ry = Math.max(newY, Math.min(newY + newSize.h - 1, (r.gridPosition?.y || 0) + dy));
-        await updateDoc(doc(db, 'inhabitants', r.id), {
-          gridPosition: { x: rx, y: ry },
+      for (const p of turned.plants) {
+        const prev = riders.find((r) => r.id === p.id);
+        if (
+          prev &&
+          prev.planterId === id &&
+          prev.gridPosition?.x === p.x &&
+          prev.gridPosition?.y === p.y
+        ) {
+          continue;
+        }
+        await updateDoc(doc(db, 'inhabitants', p.id), {
+          gridPosition: { x: p.x, y: p.y },
           planterId: id,
         });
       }
