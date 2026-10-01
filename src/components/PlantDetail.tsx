@@ -7,6 +7,7 @@ import "react-datepicker/dist/react-datepicker.css";
 import { cn } from '@/src/lib/utils';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { recalculateVigor, type VigorBreakdown } from '../lib/vigor';
+import { waterNowUpdate } from '../lib/wateringUpdate';
 import { db, doc, onSnapshot, updateDoc, deleteDoc, handleFirestoreError, OperationType, serverTimestamp, query, collection, where, ref, uploadBytes, getDownloadURL, storage, addDoc, runTransaction } from '../firebase';
 import { toast } from 'sonner';
 import { Inhabitant, EventLog } from '../types';
@@ -199,12 +200,13 @@ export default function PlantDetail() {
   const handleWaterNow = async () => {
     if (!plant || !id) return;
     try {
+      const watered = waterNowUpdate();
       await updateDoc(doc(db, 'inhabitants', id), {
-        lastWatered: new Date().toISOString(),
-        status: 'Healthy'
+        lastWatered: watered.lastWatered,
+        status: watered.status,
       });
       // Recalculate vigor from the fresh watering (pest factor preserved)
-      recalculateVigor({ ...plant, lastWatered: new Date().toISOString(), status: 'Healthy' } as any, eventLogs as any).catch(() => {});
+      recalculateVigor({ ...plant, lastWatered: watered.lastWatered.toISOString(), status: watered.status } as any, eventLogs as any).catch(() => {});
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, `inhabitants/${id}`);
     }

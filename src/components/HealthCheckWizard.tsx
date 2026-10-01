@@ -6,6 +6,7 @@ import { logEvent } from '../services/eventService';
 import { db, doc, updateDoc, serverTimestamp } from '../firebase';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { calculateVigor, scoreHealthSnapshot, type HealthCheckAnswers } from '../lib/vigor';
+import { lastWateredValue } from '../lib/wateringUpdate';
 import type { Inhabitant } from '../types';
 import { toast } from 'sonner';
 
@@ -102,7 +103,7 @@ export default function HealthCheckWizard({ plant, onClose, onDone, onLogTreatme
         status: nextStatus,
         notes: nextNotes,
         needsWater: full.watered === 'yes' ? false : (plant.needsWater ?? false),
-        ...(full.watered === 'yes' ? { lastWatered: new Date().toISOString() } : {}),
+        ...(full.watered === 'yes' ? { lastWatered: lastWateredValue() } : {}),
         vigorIndex: after,
         vigorBreakdown: { ...calc, total: after },
         vigorUpdatedAt: serverTimestamp(),
