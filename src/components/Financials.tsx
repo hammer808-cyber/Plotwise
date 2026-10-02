@@ -33,6 +33,7 @@ import { logEvent } from '../services/eventService';
 import { sendToInventorySync } from '../services/inventoryService';
 import CheckmarkCelebration from './CheckmarkCelebration';
 import { db, collection, query, where, onSnapshot, addDoc, deleteDoc, doc, handleFirestoreError, OperationType, serverTimestamp } from '../firebase';
+import { TASK_FREQUENCIES, coerceTaskFrequency } from '../lib/firestoreEnums';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { useActivePlot } from '../contexts/ActivePlotContext';
 import { toast } from 'sonner';
@@ -151,7 +152,7 @@ export default function Financials() {
       await addDoc(collection(db, 'tasks'), {
         ownerUid: user.uid,
         task: newTask.task,
-        frequency: newTask.frequency,
+        frequency: coerceTaskFrequency(newTask.frequency),
         plantId: newTask.plantId || null,
         plantName: selectedInhabitant?.name || null,
         plotId: newTask.plotId || null,
@@ -577,7 +578,7 @@ export default function Financials() {
             <div className="bg-white p-6 rounded-3xl border border-outline-variant/30 shadow-sm">
               <h4 className="font-black text-sm uppercase tracking-wider text-on-surface-variant/60 mb-4">Quick Filters</h4>
               <div className="flex flex-wrap gap-2">
-                {['Daily', 'Weekly', 'Bi-weekly'].map(freq => (
+                {TASK_FREQUENCIES.map(freq => (
                   <button key={freq} className="px-4 py-2 rounded-xl bg-surface-variant/20 text-xs font-bold hover:bg-primary hover:text-white transition-all">
                     {freq}
                   </button>
@@ -719,8 +720,8 @@ export default function Financials() {
 
                 <div className="space-y-2">
                   <label className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant/60 ml-4">Frequency</label>
-                  <div className="grid grid-cols-3 gap-2">
-                    {['Daily', 'Weekly', 'Bi-weekly'].map(freq => (
+                  <div className="grid grid-cols-2 gap-2">
+                    {TASK_FREQUENCIES.map(freq => (
                       <button
                         key={freq}
                         type="button"
