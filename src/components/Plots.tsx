@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Plus, Trash2, DollarSign, TrendingUp, Calendar, Tag, ChevronRight, Activity, Map as MapIcon, Filter, Search, X, Check, ExternalLink, Edit3 } from 'lucide-react';
-import { db, collection, query, where, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, handleFirestoreError, OperationType, updateDoc, getDocs, deleteField, batchDelete } from '../firebase';
+import { db, collection, query, where, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, handleFirestoreError, OperationType, updateDoc, getDocs, batchDelete } from '../firebase';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { useActivePlot } from '../contexts/ActivePlotContext';
 import { cn } from '@/src/lib/utils';
@@ -11,6 +11,7 @@ import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import PlotCreateModal from './PlotCreateModal';
 import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import { countPlanted, countWaiting } from '../lib/plotStats';
+import { unassignPlantUpdate } from '../lib/unassignedPlants';
 
 import { 
   Inhabitant, 
@@ -154,11 +155,7 @@ export default function Plots() {
       const inhabitantsSnap = await getDocs(inhabitantsQ);
       step = 'update-inhabitants';
       for (const d of inhabitantsSnap.docs) {
-        await updateDoc(doc(db, 'inhabitants', d.id), {
-          plotId: deleteField(),
-          planterId: deleteField(),
-          gridPosition: { x: 0, y: 0 }
-        });
+        await updateDoc(doc(db, 'inhabitants', d.id), unassignPlantUpdate(d.data().status));
       }
 
       // 3. Delete expenses
@@ -203,7 +200,7 @@ export default function Plots() {
       step = 'delete-plot';
       await deleteDoc(doc(db, 'spatial_plots', id));
 
-      toast.success('Plot and all associated data deleted');
+      toast.success('Plot deleted. Its plants are back in your unassigned inventory.');
       setPlotToDelete(null);
       setShowDeleteModal(false);
     } catch (error) {

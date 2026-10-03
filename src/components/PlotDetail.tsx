@@ -68,6 +68,7 @@ import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import BedEditModal from './BedEditModal';
 import { isPlanted, countPlanted, countWaiting } from '../lib/plotStats';
+import { isUnassignedPlant, unassignPlantUpdate } from '../lib/unassignedPlants';
 import { duplicateBed } from '../lib/duplicateBed';
 import { recalculateVigor, refreshStaleVigor, averageVigor } from '../lib/vigor';
 import WeedWarriorWizard from './WeedWarriorWizard';
@@ -316,10 +317,15 @@ export default function PlotDetail() {
       });
     });
 
-    // Fetch Unassigned Inhabitants
-    const unassignedQ = query(collection(db, 'inhabitants'), where('plotId', '==', null), where('ownerUid', '==', user.uid));
+    // Fetch Unassigned Inhabitants.
+    // Do not query plotId == null: plants released with deleteField() have no
+    // plotId at all, and Firestore will not return those documents. Load this
+    // owner's plants and keep the ones with a null or missing plotId.
+    const unassignedQ = query(collection(db, 'inhabitants'), where('ownerUid', '==', user.uid));
     const unsubscribeUnassigned = onSnapshot(unassignedQ, (snapshot) => {
-      const unassigned = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Inhabitant));
+      const unassigned = snapshot.docs
+        .map(doc => ({ id: doc.id, ...doc.data() } as Inhabitant))
+        .filter(isUnassignedPlant);
       setAvailableInhabitants(prev => {
         const assignedToThisPlot = prev.filter(p => p.plotId === plotId);
         return [...unassigned, ...assignedToThisPlot];
@@ -822,13 +828,7 @@ export default function PlotDetail() {
       const inhabitantsSnap = await getDocs(inhabitantsQ);
       for (const d of inhabitantsSnap.docs) {
         const data = d.data();
-        await updateDoc(doc(db, 'inhabitants', d.id), {
-          plotId: deleteField(),
-          planterId: deleteField(),
-          gridPosition: { x: 0, y: 0 },
-          // Back to unassigned: Planted -> Pending
-          ...(data.status === 'Planted' ? { status: 'Pending' } : {})
-        });
+        await updateDoc(doc(db, 'inhabitants', d.id), unassignPlantUpdate(data.status));
       }
 
       // 3. Delete planters in batch
