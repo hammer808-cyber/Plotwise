@@ -7,6 +7,7 @@ import { useFirebase } from '../contexts/FirebaseContext';
 import { useActivePlot } from '../contexts/ActivePlotContext';
 import { db, collection, query, where, onSnapshot, handleFirestoreError, OperationType, addDoc, serverTimestamp, deleteDoc, doc, deleteField, batchDelete } from '../firebase';
 import { getPlantInfo } from '../constants/plants';
+import { INHABITANT_TYPES, normalizeInhabitantType, plantAssignmentPatch } from '../lib/plantAssignment';
 import { PLANT_PLACEHOLDER } from '../lib/plantImage';
 import { Inhabitant, SpatialPlot, EventLog } from '../types';
 import { calculateVigorIndex } from '../lib/botany';
@@ -151,12 +152,16 @@ export default function Inventory() {
       await updateDoc(doc(db, 'inhabitants', editingPlant.id), {
         name: editingPlant.name,
         scientific: editingPlant.scientific || '',
-        type: editingPlant.type,
+        type: normalizeInhabitantType(editingPlant.type),
         waterFreq: editingPlant.waterFreq,
         sunExposure: editingPlant.sunExposure,
         notes: editingPlant.notes || '',
-        plotId: editingPlant.plotId,
-        planterId: editingPlant.planterId,
+        // "" is the select's Unassigned / No bed value. Rules accept it, but
+        // the rail only loads plotId == null, so the plant would vanish.
+        ...plantAssignmentPatch({
+          plotId: editingPlant.plotId,
+          planterId: editingPlant.planterId,
+        }),
         updatedAt: serverTimestamp()
       });
       
@@ -168,8 +173,13 @@ export default function Inventory() {
         setIsSaving(false);
       }, 500);
     } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `inhabitants/${editingPlant.id}`);
       setIsSaving(false);
+      toast.error('Could not save that plant.');
+      try {
+        handleFirestoreError(error, OperationType.UPDATE, `inhabitants/${editingPlant.id}`);
+      } catch {
+        // handleFirestoreError logs and rethrows
+      }
     }
   };
 
@@ -890,11 +900,9 @@ export default function Inventory() {
                             onChange={(e) => setNewPlantData({ ...newPlantData, type: e.target.value })}
                             className="w-full bg-surface-container-low border-none rounded-2xl px-6 py-4 font-bold focus:ring-2 focus:ring-primary/20 transition-all appearance-none"
                           >
-                            <option value="Herb">Herb</option>
-                            <option value="Vegetable">Vegetable</option>
-                            <option value="Fruit">Fruit</option>
-                            <option value="Flower">Flower</option>
-                            <option value="Succulent">Succulent</option>
+                            {INHABITANT_TYPES.map((t) => (
+                              <option key={t} value={t}>{t}</option>
+                            ))}
                           </select>
                         </div>
                         <div className="space-y-2">
@@ -1080,11 +1088,9 @@ export default function Inventory() {
                         onChange={(e) => setEditingPlant({ ...editingPlant, type: e.target.value })}
                         className="w-full bg-surface-container-low border-none rounded-2xl px-6 py-4 font-bold focus:ring-2 focus:ring-primary/20 transition-all appearance-none"
                       >
-                        <option value="Herb">Herb</option>
-                        <option value="Vegetable">Vegetable</option>
-                        <option value="Fruit">Fruit</option>
-                        <option value="Flower">Flower</option>
-                        <option value="Succulent">Succulent</option>
+                        {INHABITANT_TYPES.map((t) => (
+                          <option key={t} value={t}>{t}</option>
+                        ))}
                       </select>
                     </div>
                     <div className="space-y-2">
