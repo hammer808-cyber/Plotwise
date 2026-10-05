@@ -68,6 +68,7 @@ import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import BedEditModal from './BedEditModal';
 import { isPlanted, countPlanted, countWaiting } from '../lib/plotStats';
+import { plantCellAfterBedMove } from '../lib/bedCoords';
 import { duplicateBed } from '../lib/duplicateBed';
 import { recalculateVigor, refreshStaleVigor, averageVigor } from '../lib/vigor';
 import WeedWarriorWizard from './WeedWarriorWizard';
@@ -546,11 +547,16 @@ export default function PlotDetail() {
           p.gridPosition.y >= planter.gridPosition.y && p.gridPosition.y < planter.gridPosition.y + planter.size.h)
       );
       for (const r of riders) {
-        const rx = Math.max(0, Math.min(COLS - 1, (r.gridPosition?.x || 0) + dx));
-        const ry = Math.max(0, Math.min(ROWS - 1, (r.gridPosition?.y || 0) + dy));
+        const next = plantCellAfterBedMove(
+          { x: r.gridPosition?.x || 0, y: r.gridPosition?.y || 0 },
+          dx,
+          dy,
+          COLS,
+          ROWS
+        );
         try {
           await updateDoc(doc(db, 'inhabitants', r.id), {
-            gridPosition: { x: rx, y: ry },
+            gridPosition: next,
             planterId: planter.id,
           });
         } catch (error) {
@@ -560,42 +566,6 @@ export default function PlotDetail() {
     }
     return true;
   };
-
-  // One-time repair: the first tap-to-place build (Sep 24) wrote bed-local
-  // coordinates for a few plants. Detect them (planterId set, coords only make
-  // sense as bed-local) and rewrite as plot-global so they render in place.
-  const repairedCoordsRef = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!user || planters.length === 0 || inhabitants.length === 0) return;
-    const fixes: { id: string; pos: { x: number; y: number } }[] = [];
-    for (const pl of inhabitants) {
-      if (!pl.planterId || !pl.gridPosition || repairedCoordsRef.current.has(pl.id)) continue;
-      const bed = planters.find((b) => b.id === pl.planterId);
-      if (!bed?.gridPosition || !bed?.size) continue;
-      const gx = pl.gridPosition.x - bed.gridPosition.x;
-      const gy = pl.gridPosition.y - bed.gridPosition.y;
-      const globalOk = gx >= 0 && gy >= 0 && gx < bed.size.w && gy < bed.size.h;
-      const localOk =
-        pl.gridPosition.x >= 0 && pl.gridPosition.y >= 0 &&
-        pl.gridPosition.x < bed.size.w && pl.gridPosition.y < bed.size.h;
-      if (!globalOk && localOk) {
-        fixes.push({
-          id: pl.id,
-          pos: { x: bed.gridPosition.x + pl.gridPosition.x, y: bed.gridPosition.y + pl.gridPosition.y },
-        });
-        repairedCoordsRef.current.add(pl.id);
-      }
-    }
-    if (fixes.length > 0) {
-      Promise.all(
-        fixes.map((f) =>
-          updateDoc(doc(db, 'inhabitants', f.id), { gridPosition: f.pos, updatedAt: serverTimestamp() }).catch(
-            (error) => handleFirestoreError(error, OperationType.UPDATE, `inhabitants/${f.id}`)
-          )
-        )
-      ).then(() => toast.info(`Tidied ${fixes.length} plant${fixes.length === 1 ? '' : 's'} into place.`));
-    }
-  }, [user, planters, inhabitants]);
 
   /** Nudge the moving bed one cell; used by the banner arrow pad. */
   /** Tap-to-move: tap anywhere on the plot (bed or bare grid) to drop the bed there. */
