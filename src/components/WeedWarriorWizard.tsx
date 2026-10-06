@@ -7,6 +7,7 @@ import { toast } from 'sonner';
 import DiscoverySubWizard from './DiscoverySubWizard';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { db, collection, query, where, onSnapshot } from '../firebase';
+import { TAXONOMY_OWNER_FIELD } from '../lib/taxonomy';
 
 interface WeedWarriorWizardProps {
   isOpen: boolean;
@@ -46,16 +47,19 @@ export default function WeedWarriorWizard({ isOpen, onClose, onSave, plotId, plo
   useEffect(() => {
     if (!user || !isOpen) return;
 
+    // Single-field equality uses the automatic index. Pairing it with `type`
+    // needs a composite index this project does not ship, so the listener
+    // failed and custom weeds never appeared.
     const q = query(
       collection(db, 'custom_taxonomy'),
-      where('ownerUid', '==', user.uid),
-      where('type', '==', 'weed')
+      where(TAXONOMY_OWNER_FIELD, '==', user.uid)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const weeds: Record<string, any> = {};
       snapshot.docs.forEach(doc => {
         const data = doc.data();
+        if (data.type !== 'weed') return;
         weeds[data.name] = data;
       });
       setCustomWeeds(weeds);
@@ -116,6 +120,12 @@ export default function WeedWarriorWizard({ isOpen, onClose, onSave, plotId, plo
     if (!selectedWeed || !selectedMethod) return;
 
     const weed = allWeeds[selectedWeed];
+    // A custom discovery is stored under discoveredBy. Looking it up by
+    // ownerUid left it out of allWeeds, and this read threw before the log.
+    if (!weed || typeof weed.threat !== 'number') {
+      toast.error('Pick a weed from the list before logging the victory.');
+      return;
+    }
     const weq = calculateWEQ(areaCleared, intensity, timeSpent);
     const xp = Math.round((weed.threat * intensity * areaCleared) / 10);
 
@@ -375,6 +385,9 @@ export default function WeedWarriorWizard({ isOpen, onClose, onSave, plotId, plo
           isOpen={isDiscoveryOpen}
           onClose={() => setIsDiscoveryOpen(false)}
           onDiscovery={(newSpecies) => {
+            // Show it immediately — the snapshot may not have landed yet,
+            // and Log Victory reads threat off this map.
+            setCustomWeeds((prev) => ({ ...prev, [newSpecies.name]: newSpecies }));
             setSelectedWeed(newSpecies.name);
             setIsDiscoveryOpen(false);
           }}
