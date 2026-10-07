@@ -4,7 +4,7 @@ import type { Inhabitant } from '../types';
 import type { BedLike } from '../components/BedEditModal';
 
 export interface DuplicatableBed extends BedLike {
-  plotId: string;
+  plotId: string | null;
   type?: string;
   ownerUid: string;
 }
@@ -44,20 +44,26 @@ export async function duplicateBed(opts: {
   siblingBeds: BedLike[];
   plotCols: number;
   plotRows: number;
+  /** When true, the copy stays out of any plot (no placement scan). */
+  standalone?: boolean;
 }): Promise<DuplicateResult | null> {
-  const { bed, plants, siblingBeds, plotCols, plotRows } = opts;
+  const { bed, plants, siblingBeds, plotCols, plotRows, standalone } = opts;
   const w = bed.size.w;
   const h = bed.size.h;
 
   let spot: { x: number; y: number } | null = null;
-  for (let y = 0; y <= plotRows - h && !spot; y++) {
-    for (let x = 0; x <= plotCols - w && !spot; x++) {
-      const hit = siblingBeds.some(
-        (b) =>
-          b.id !== bed.id &&
-          rectsOverlap(x, y, w, h, b.gridPosition.x, b.gridPosition.y, b.size.w, b.size.h)
-      );
-      if (!hit) spot = { x, y };
+  if (standalone || !bed.plotId) {
+    spot = { x: 0, y: 0 };
+  } else {
+    for (let y = 0; y <= plotRows - h && !spot; y++) {
+      for (let x = 0; x <= plotCols - w && !spot; x++) {
+        const hit = siblingBeds.some(
+          (b) =>
+            b.id !== bed.id &&
+            rectsOverlap(x, y, w, h, b.gridPosition.x, b.gridPosition.y, b.size.w, b.size.h)
+        );
+        if (!hit) spot = { x, y };
+      }
     }
   }
   if (!spot) return null;
@@ -67,7 +73,7 @@ export async function duplicateBed(opts: {
 
   const bedRef = await addDoc(collection(db, 'planters'), {
     ownerUid: bed.ownerUid,
-    plotId: bed.plotId,
+    plotId: bed.plotId || null,
     name,
     type: bed.type || 'Raised Bed',
     gridPosition: spot,
@@ -89,7 +95,7 @@ export async function duplicateBed(opts: {
     const validTypes = ['Herb', 'Vegetable', 'Flower', 'Annual', 'Perennial'];
     const docData: Record<string, unknown> = {
       ownerUid: bed.ownerUid,
-      plotId: bed.plotId,
+      plotId: bed.plotId || null,
       planterId: bedRef.id,
       name: p.name || 'Plant',
       type: validTypes.includes(p.type || '') ? p.type : 'Vegetable',

@@ -56,7 +56,8 @@ import {
   AlertTriangle,
   ShieldAlert,
   ChevronRight,
-  Copy
+  Copy,
+  Share2
 } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import { logEvent } from '../services/eventService';
@@ -69,6 +70,7 @@ import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import BedEditModal from './BedEditModal';
 import { isPlanted, countPlanted, countWaiting } from '../lib/plotStats';
 import { duplicateBed } from '../lib/duplicateBed';
+import SharePlotModal from './SharePlotModal';
 import { recalculateVigor, refreshStaleVigor, averageVigor } from '../lib/vigor';
 import WeedWarriorWizard from './WeedWarriorWizard';
 import TreatmentConflictModal from './TreatmentConflictModal';
@@ -206,6 +208,7 @@ export default function PlotDetail() {
   const [zoom, setZoom] = useState(1);
   const [activeLayer, setActiveLayer] = useState<'none' | 'family' | 'irrigation'>('none');
   const [selectedPlanterId, setSelectedPlanterId] = useState<string | null>(null);
+  const [showShare, setShowShare] = useState(false);
 
   // Predetermined plot grid: each plot carries its own dimensions from the
   // bed-build quiz (gridConfig). Legacy plots fall back to the old 30x20.
@@ -295,14 +298,14 @@ export default function PlotDetail() {
       }
     });
 
-    // Fetch Planters for this Plot
-    const pq = query(collection(db, 'planters'), where('plotId', '==', plotId), where('ownerUid', '==', user.uid));
+    // Fetch Planters for this Plot (plotId-only: collaborators' beds live here too)
+    const pq = query(collection(db, 'planters'), where('plotId', '==', plotId));
     const unsubscribePlanters = onSnapshot(pq, (snapshot) => {
       setPlanters(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Planter)));
     });
 
-    // Fetch Inhabitants for this Plot
-    const inhabitantsQ = query(collection(db, 'inhabitants'), where('plotId', '==', plotId), where('ownerUid', '==', user.uid));
+    // Fetch Inhabitants for this Plot (plotId-only: collaborators' plants too)
+    const inhabitantsQ = query(collection(db, 'inhabitants'), where('plotId', '==', plotId));
     const unsubscribeInhabitants = onSnapshot(inhabitantsQ, (snapshot) => {
       const allPlotInhabitants = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Inhabitant));
       // Planted = sitting in a bed (planterId set) or at a real grid position
@@ -1293,6 +1296,13 @@ export default function PlotDetail() {
           >
             <Edit3 size={24} />
           </button>
+          <button
+            onClick={() => setShowShare(true)}
+            className="p-4 hover:bg-surface-container-high rounded-2xl transition-colors text-on-surface-variant touch-target"
+            title="Share this plot"
+          >
+            <Share2 size={24} />
+          </button>
           <div className="w-px h-10 bg-outline-variant/20 mx-2" />
           <div className="flex items-center gap-1 bg-white/50 p-1 rounded-xl border border-outline-variant/10">
             <button onClick={() => setZoom(prev => Math.max(0.5, prev - 0.1))} className="p-2 hover:bg-surface-container-high rounded-lg transition-colors"><Minimize2 size={20} /></button>
@@ -2146,6 +2156,18 @@ export default function PlotDetail() {
             otherBeds={planters.filter((b) => b.id !== editingPlanter.id)}
             plants={inhabitants}
             onClose={() => setEditingPlanter(null)}
+          />
+        )}
+      </AnimatePresence>
+
+      {/* Share Plot Modal */}
+      <AnimatePresence>
+        {showShare && plot && (
+          <SharePlotModal
+            plotId={plotId!}
+            plotName={plot.name || 'Plot'}
+            isOwner={plot.ownerUid === user?.uid}
+            onClose={() => setShowShare(false)}
           />
         )}
       </AnimatePresence>

@@ -179,6 +179,10 @@ export interface SpatialPlot {
   dailyJoke?: { text?: string; lastUpdated?: number };
   maintenanceLog?: { id?: string; action?: string; date?: string; notes?: string }[];
   createdAt?: StoredDate;
+  /** Plot sharing: uids allowed into this plot (besides the owner). */
+  collaboratorUids?: string[];
+  /** Display names keyed by collaborator uid. */
+  collaboratorNames?: Record<string, string>;
 }
 
 export interface EventLog {

@@ -82,7 +82,23 @@ service cloud.firestore {
     //   - gridPosition: map (required) - {x, y}
     //   - size: map (required) - {w, h}
     //   - color: string (required) - Hex color
+    //   - plotId: string|null (optional) - Plot it lives in; null = standalone bed
     //   - createdAt: timestamp (required) - Creation date
+    //
+    // Collection: plot_invites
+    // Document ID: {code} (unguessable 8-char invite code)
+    // Fields:
+    //   - plotId: string (required) - Shared plot
+    //   - createdBy: string (required) - Owner's UID
+    //   - createdAt: timestamp (required) - Creation date
+    //
+    // Plot sharing model (see spatial_plots match rules):
+    //   - spatial_plots.collaboratorUids: string[] - uids gardening in this plot
+    //   - spatial_plots.collaboratorNames: map uid->display name
+    //   - spatial_plots.activeInviteCode: string|null - current invite code (owner-only)
+    //   - Anyone with a code joins by adding ONLY themselves (rules-enforced).
+    //   - Collaborators: read + garden (beds/plants/photos). No bed/plot
+    //     delete, no sharing management. Care logs/expenses stay per-user.
     //
     // Collection: fertilizing_events
     // Document ID: {eventId}
@@ -199,6 +215,68 @@ service cloud.firestore {
     function uidNotModified() {
       return !('ownerUid' in request.resource.data) ||
         request.resource.data.ownerUid == resource.data.ownerUid;
+    }
+
+    // ===============================================================
+    // Plot sharing
+    // ===============================================================
+    // A plot can list collaborators (besides its owner). Anyone with an
+    // invite code joins by adding ONLY themselves to collaboratorUids /
+    // collaboratorNames — the rules below reject any other shape of join.
+    // Collaborators can read and garden in the plot (beds, plants, photos)
+    // but cannot delete beds or the plot, and cannot manage sharing.
+
+    function plotDoc(plotId) {
+      return get(/databases/$(database)/documents/spatial_plots/$(plotId)).data;
+    }
+
+    /** True when the caller's uid owns the plot or is a collaborator on it. */
+    function isPlotMember(plotId) {
+      return isAuthenticated() && plotId is string && plotId.size() > 0
+        && (plotDoc(plotId).ownerUid == request.auth.uid
+          || request.auth.uid in plotDoc(plotId).get('collaboratorUids', []));
+    }
+
+    /** True when the caller is a collaborator on the plot being read/updated. */
+    function isDocCollaborator() {
+      return isAuthenticated()
+        && request.auth.uid in resource.data.get('collaboratorUids', []);
+    }
+
+    /** Collaborator edits must leave ownership and sharing fields alone. */
+    function plotSharingUnchanged() {
+      return request.resource.data.ownerUid == resource.data.ownerUid
+        && request.resource.data.get('collaboratorUids', []) == resource.data.get('collaboratorUids', [])
+        && request.resource.data.get('collaboratorNames', {}) == resource.data.get('collaboratorNames', {})
+        && request.resource.data.get('activeInviteCode', null) == resource.data.get('activeInviteCode', null);
+    }
+
+    /** Joining via invite code: the only allowed change is adding yourself. */
+    function isSelfJoin() {
+      let oldUids = resource.data.get('collaboratorUids', []).toSet();
+      let newUids = request.resource.data.get('collaboratorUids', []).toSet();
+      let oldNames = resource.data.get('collaboratorNames', {});
+      let newNames = request.resource.data.get('collaboratorNames', {});
+      return isAuthenticated()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collaboratorUids', 'collaboratorNames'])
+        && newUids == oldUids.union([request.auth.uid].toSet())
+        && newNames.keys().toSet() == oldNames.keys().toSet().union([request.auth.uid].toSet())
+        && newNames[request.auth.uid] is string
+        && newNames[request.auth.uid].size() > 0
+        && newNames[request.auth.uid].size() < 100;
+    }
+
+    /** Leaving: the only allowed change is removing yourself. */
+    function isSelfLeave() {
+      let oldUids = resource.data.get('collaboratorUids', []).toSet();
+      let newUids = request.resource.data.get('collaboratorUids', []).toSet();
+      let oldNames = resource.data.get('collaboratorNames', {});
+      let newNames = request.resource.data.get('collaboratorNames', {});
+      return isAuthenticated()
+        && request.auth.uid in oldUids
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collaboratorUids', 'collaboratorNames'])
+        && newUids == oldUids.difference([request.auth.uid].toSet())
+        && newNames.keys().toSet() == oldNames.keys().toSet().difference([request.auth.uid].toSet());
     }
 
     function hasRequiredFields(fields) {
@@ -385,8 +463,10 @@ service cloud.firestore {
     }
 
     function isValidInhabitant(data) {
+      // NOTE: ownerUid == request.auth.uid is NOT checked here — it is
+      // enforced explicitly on create, while updates allow collaborators.
       return hasRequiredFields(['ownerUid', 'name', 'type', 'createdAt']) &&
-        data.ownerUid == request.auth.uid &&
+        data.ownerUid is string &&
         data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
         data.type in ['Herb', 'Vegetable', 'Flower', 'Annual', 'Perennial'] &&
         data.createdAt is timestamp &&
@@ -410,8 +490,10 @@ service cloud.firestore {
     }
 
     function isValidSpatialPlot(data) {
+      // NOTE: ownerUid == request.auth.uid is NOT checked here — it is
+      // enforced explicitly on create, while updates allow collaborators.
       return hasRequiredFields(['ownerUid', 'name', 'status', 'createdAt']) &&
-        data.ownerUid == request.auth.uid &&
+        data.ownerUid is string &&
         data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
         data.status in ["Active", "Planned", "Retired", "Quarantine"] &&
         data.createdAt is timestamp &&
@@ -503,25 +585,68 @@ service cloud.firestore {
     // ===============================================================
 
     match /inhabitants/{id} {
-      allow read: if isDocOwner() || isAdmin();
-      allow create: if isAuthenticated() && isValidInhabitant(request.resource.data);
-      allow update: if (isDocOwner() && isValidInhabitant(request.resource.data) && uidNotModified()) || isAdmin();
-      allow delete: if isDocOwner() || isAdmin();
+      allow read: if isDocOwner() || isAdmin() || (isAuthenticated()
+        && resource.data.get('plotId', null) is string && isPlotMember(resource.data.plotId));
+      allow create: if isAuthenticated()
+        && request.resource.data.ownerUid == request.auth.uid
+        && isValidInhabitant(request.resource.data)
+        && (request.resource.data.get('plotId', null) == null || isPlotMember(request.resource.data.plotId));
+      allow update: if isAdmin() || (isAuthenticated()
+        && isValidInhabitant(request.resource.data)
+        && uidNotModified()
+        && (isDocOwner()
+          || (resource.data.get('plotId', null) is string
+            && isPlotMember(resource.data.plotId)
+            && request.resource.data.get('plotId', null) == resource.data.plotId)
+          || (resource.data.get('plotId', null) is string
+            && plotDoc(resource.data.plotId).ownerUid == request.auth.uid)));
+      allow delete: if isDocOwner() || isAdmin() || (isAuthenticated()
+        && resource.data.get('plotId', null) is string
+        && plotDoc(resource.data.plotId).ownerUid == request.auth.uid);
 
       // Per-plant photo timeline (visual growth log)
       match /photos/{photoId} {
-        allow read: if isDocOwner() || isAdmin();
-        allow create: if isAuthenticated() && request.resource.data.ownerUid == request.auth.uid;
+        allow read: if isDocOwner() || isAdmin() || (isAuthenticated()
+          && parentPlantPlot() is string && isPlotMember(parentPlantPlot()));
+        allow create: if isAuthenticated()
+          && request.resource.data.ownerUid == request.auth.uid
+          && (parentPlantPlot() == null || isPlotMember(parentPlantPlot()));
         allow update: if isDocOwner() || isAdmin();
         allow delete: if isDocOwner() || isAdmin();
       }
     }
 
+    // Plot of the parent plant for the photos subcollection above.
+    function parentPlantPlot() {
+      return get(/databases/$(database)/documents/inhabitants/$(id)).data.get('plotId', null);
+    }
+
     match /spatial_plots/{id} {
-      allow read: if isDocOwner() || isAdmin();
-      allow create: if isAuthenticated() && isValidSpatialPlot(request.resource.data);
-      allow update: if (isDocOwner() && isValidSpatialPlot(request.resource.data) && uidNotModified()) || isAdmin();
+      allow read: if isDocOwner() || isAdmin() || isDocCollaborator();
+      allow create: if isAuthenticated()
+        && request.resource.data.ownerUid == request.auth.uid
+        && isValidSpatialPlot(request.resource.data);
+      allow update: if isAdmin() || (isAuthenticated()
+        && isValidSpatialPlot(request.resource.data)
+        && ((isDocOwner() && uidNotModified())
+          || (isDocCollaborator() && uidNotModified() && plotSharingUnchanged())
+          || (isSelfJoin() && uidNotModified())
+          || (isSelfLeave() && uidNotModified())));
       allow delete: if isDocOwner() || isAdmin();
+    }
+
+    // Invite codes for plot sharing. The code is the document id —
+    // unguessable, and anyone authenticated can redeem one they were given.
+    match /plot_invites/{code} {
+      allow read: if isAuthenticated();
+      allow create: if isAuthenticated()
+        && request.resource.data.plotId is string
+        && plotDoc(request.resource.data.plotId).ownerUid == request.auth.uid
+        && request.resource.data.createdBy == request.auth.uid
+        && request.resource.data.keys().hasOnly(['plotId', 'createdBy', 'createdAt']);
+      allow update: if false;
+      allow delete: if isAuthenticated()
+        && plotDoc(resource.data.plotId).ownerUid == request.auth.uid;
     }
 
     match /event_logs/{id} {
@@ -566,10 +691,25 @@ service cloud.firestore {
     }
 
     match /planters/{planterId} {
-      allow read: if isDocOwner() || isAdmin();
-      allow create: if isAuthenticated() && isValidPlanter(request.resource.data);
-      allow update: if (isDocOwner() && isValidPlanter(request.resource.data) && uidNotModified()) || isAdmin();
-      allow delete: if isDocOwner() || isAdmin();
+      allow read: if isDocOwner() || isAdmin() || (isAuthenticated()
+        && resource.data.get('plotId', null) is string && isPlotMember(resource.data.plotId));
+      allow create: if isAuthenticated()
+        && request.resource.data.ownerUid == request.auth.uid
+        && isValidPlanter(request.resource.data)
+        && (request.resource.data.get('plotId', null) == null || isPlotMember(request.resource.data.plotId));
+      allow update: if isAdmin() || (isAuthenticated()
+        && isValidPlanter(request.resource.data)
+        && uidNotModified()
+        && (isDocOwner()
+          || (resource.data.get('plotId', null) is string
+            && isPlotMember(resource.data.plotId)
+            && request.resource.data.get('plotId', null) == resource.data.plotId)
+          || (resource.data.get('plotId', null) is string
+            && plotDoc(resource.data.plotId).ownerUid == request.auth.uid)));
+      // Beds: you can delete your own; the plot owner can delete any bed in their plot.
+      allow delete: if isDocOwner() || isAdmin() || (isAuthenticated()
+        && resource.data.get('plotId', null) is string
+        && plotDoc(resource.data.plotId).ownerUid == request.auth.uid);
     }
 
     match /fertilizing_events/{eventId} {
@@ -645,6 +785,13 @@ service cloud.firestore {
       allow read: if isDocOwner() || isAdmin();
       allow create: if isAuthenticated() && isValidTreatmentEvent(request.resource.data);
       allow update: if (isDocOwner() && isValidTreatmentEvent(request.resource.data) && uidNotModified()) || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    match /ai_diagnosis_corrections/{id} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && request.resource.data.ownerUid == request.auth.uid;
+      allow update: if (isDocOwner() && uidNotModified()) || isAdmin();
       allow delete: if isDocOwner() || isAdmin();
     }
 

@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Plus, Trash2, DollarSign, TrendingUp, Calendar, Tag, ChevronRight, Activity, Map as MapIcon, Filter, Search, X, Check, ExternalLink, Edit3 } from 'lucide-react';
+import { Plus, Trash2, DollarSign, TrendingUp, Calendar, Tag, ChevronRight, Activity, Map as MapIcon, Filter, Search, X, Check, ExternalLink, Edit3, UserPlus, Sprout, Users } from 'lucide-react';
 import { db, collection, query, where, onSnapshot, addDoc, deleteDoc, doc, serverTimestamp, handleFirestoreError, OperationType, updateDoc, getDocs, deleteField, batchDelete } from '../firebase';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { useActivePlot } from '../contexts/ActivePlotContext';
@@ -11,6 +11,7 @@ import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import PlotCreateModal from './PlotCreateModal';
 import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import { countPlanted, countWaiting } from '../lib/plotStats';
+import { joinPlotWithCode } from '../lib/sharing';
 
 import { 
   Inhabitant, 
@@ -26,6 +27,8 @@ export default function Plots() {
   const navigate = useNavigate();
   const location = useLocation();
   const [plots, setPlots] = useState<SpatialPlot[]>([]);
+  const [sharedPlots, setSharedPlots] = useState<SpatialPlot[]>([]);
+  const [standaloneBeds, setStandaloneBeds] = useState<{ id: string; name: string; size: { w: number; h: number } }[]>([]);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [inhabitants, setInhabitants] = useState<Inhabitant[]>([]);
   const [loading, setLoading] = useState(true);
@@ -38,6 +41,9 @@ export default function Plots() {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const [plotToDelete, setPlotToDelete] = useState<string | null>(null);
   const [expenseToDelete, setExpenseToDelete] = useState<string | null>(null);
+  const [showJoin, setShowJoin] = useState(false);
+  const [joinCode, setJoinCode] = useState('');
+  const [joining, setJoining] = useState(false);
 
   const [newExpense, setNewExpense] = useState({ plotId: '', item: '', amount: '', category: 'Seeds', date: new Date().toISOString().split('T')[0] });
 
@@ -54,6 +60,22 @@ export default function Plots() {
       setLoading(false);
     });
 
+    // Plots shared with me via invite code
+    const sharedQ = query(collection(db, 'spatial_plots'), where('collaboratorUids', 'array-contains', user.uid));
+    const unsubscribeShared = onSnapshot(sharedQ, (snapshot) => {
+      setSharedPlots(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as SpatialPlot)));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'spatial_plots/shared');
+    });
+
+    // Beds not in any plot yet (created during onboarding or duplicated standalone)
+    const bedsQ = query(collection(db, 'planters'), where('ownerUid', '==', user.uid), where('plotId', '==', null));
+    const unsubscribeBeds = onSnapshot(bedsQ, (snapshot) => {
+      setStandaloneBeds(snapshot.docs.map(d => ({ id: d.id, name: (d.data().name as string) || 'Bed', size: d.data().size as { w: number; h: number } })));
+    }, (error) => {
+      handleFirestoreError(error, OperationType.LIST, 'planters/standalone');
+    });
+
     const expensesQ = query(collection(db, 'expenses'), where('ownerUid', '==', user.uid));
     const unsubscribeExpenses = onSnapshot(expensesQ, (snapshot) => {
       const list = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Expense));
@@ -62,19 +84,54 @@ export default function Plots() {
       handleFirestoreError(error, OperationType.LIST, 'expenses');
     });
 
-    const inhabitantsQ = query(collection(db, 'inhabitants'), where('ownerUid', '==', user.uid));
-    const unsubscribeInhabitants = onSnapshot(inhabitantsQ, (snapshot) => {
-      setInhabitants(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Inhabitant)));
-    }, (error) => {
-      handleFirestoreError(error, OperationType.LIST, 'inhabitants');
-    });
+    // Inhabitants are subscribed per-plot below (covers shared plots and
+    // collaborators' plants); no separate owner-wide subscription here.
 
     return () => {
       unsubscribePlots();
+      unsubscribeShared();
+      unsubscribeBeds();
       unsubscribeExpenses();
-      unsubscribeInhabitants();
     };
   }, [user]);
+
+  // Inhabitants across my plots and shared plots (for the per-plot counts),
+  // chunked because Firestore 'in' queries take at most 10 values.
+  const inhabitantChunks = useRef<Map<number, Inhabitant[]>>(new Map());
+  useEffect(() => {
+    if (!user) return;
+    const ids = [...plots.map((p) => p.id), ...sharedPlots.map((p) => p.id)].filter(
+      (id): id is string => !!id
+    );
+    inhabitantChunks.current.clear();
+    if (ids.length === 0) {
+      setInhabitants([]);
+      return;
+    }
+    const rebuild = () => setInhabitants([...inhabitantChunks.current.values()].flat());
+    const unsubs: Array<() => void> = [];
+    for (let c = 0; c < ids.length; c += 10) {
+      const chunkIdx = c / 10;
+      const chunk = ids.slice(c, c + 10);
+      const q = query(collection(db, 'inhabitants'), where('plotId', 'in', chunk));
+      unsubs.push(
+        onSnapshot(
+          q,
+          (snap) => {
+            inhabitantChunks.current.set(
+              chunkIdx,
+              snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Inhabitant)
+            );
+            rebuild();
+          },
+          (error) => handleFirestoreError(error, OperationType.LIST, 'inhabitants')
+        )
+      );
+    }
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [user, plots, sharedPlots]);
 
   useEffect(() => {
     if (location.state?.openAddPlot) {
@@ -135,6 +192,27 @@ export default function Plots() {
 
   const [isDeletingConfirmed, setIsDeletingConfirmed] = useState(false);
 
+  const handleJoinPlot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!user || joining || !joinCode.trim()) return;
+    setJoining(true);
+    try {
+      const { plotId, plotName } = await joinPlotWithCode(joinCode, {
+        uid: user.uid,
+        displayName: user.displayName,
+      });
+      toast.success(`Joined "${plotName}" — no rebuilding needed.`);
+      setJoinCode('');
+      setShowJoin(false);
+      setActivePlotId(plotId);
+      navigate(`/plots/${plotId}`);
+    } catch (error) {
+      if (error instanceof Error) toast.error(error.message);
+    } finally {
+      setJoining(false);
+    }
+  };
+
   const handleDeletePlot = async () => {
     if (!plotToDelete || !user) return;
     const id = plotToDelete;
@@ -142,15 +220,15 @@ export default function Plots() {
     setIsDeletingConfirmed(true);
     let step = 'init';
     try {
-      // 1. Get planters
+      // 1. Get planters (all in the plot, including collaborators')
       step = 'read-planters';
-      const plantersQ = query(collection(db, 'planters'), where('plotId', '==', id), where('ownerUid', '==', uid));
+      const plantersQ = query(collection(db, 'planters'), where('plotId', '==', id));
       const plantersSnap = await getDocs(plantersQ);
       const planterIds = plantersSnap.docs.map(d => d.id);
 
-      // 2. Unassign inhabitants
+      // 2. Unassign inhabitants (all in the plot, including collaborators')
       step = 'read-inhabitants';
-      const inhabitantsQ = query(collection(db, 'inhabitants'), where('plotId', '==', id), where('ownerUid', '==', uid));
+      const inhabitantsQ = query(collection(db, 'inhabitants'), where('plotId', '==', id));
       const inhabitantsSnap = await getDocs(inhabitantsQ);
       step = 'update-inhabitants';
       for (const d of inhabitantsSnap.docs) {
@@ -268,6 +346,13 @@ export default function Plots() {
               <MapIcon size={20} /> View Map
             </Link>
           )}
+          <button 
+            onClick={() => setShowJoin(true)}
+            aria-label="Join a shared plot with an invite code"
+            className="bg-surface-container-high text-primary px-6 py-3 rounded-2xl font-black flex items-center gap-2 hover:bg-primary hover:text-white transition-all shadow-sm touch-target"
+          >
+            <UserPlus size={20} /> Join with code
+          </button>
           <button 
             onClick={() => setShowAddPlot(true)}
             aria-label="Add new plot"
@@ -408,6 +493,77 @@ export default function Plots() {
               );
             })}
           </div>
+
+          {/* Shared with me */}
+          {sharedPlots.length > 0 && (
+            <div className="space-y-4 pt-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-headline font-black tracking-tight flex items-center gap-2">
+                  <Users size={20} className="text-primary" /> Shared with me
+                </h2>
+                <div className="bg-surface-container-high px-3 py-1 rounded-full text-[10px] font-black text-on-surface-variant uppercase tracking-widest">
+                  {sharedPlots.length} Total
+                </div>
+              </div>
+              {sharedPlots.map((plot) => {
+                const plotInhabitants = inhabitants.filter(p => p.plotId === plot.id);
+                const planted = countPlanted(plotInhabitants);
+                return (
+                  <Link
+                    key={plot.id}
+                    to={`/plots/${plot.id}`}
+                    onClick={() => setActivePlotId(plot.id)}
+                    className="block p-6 rounded-[2rem] border border-dashed border-primary/40 bg-primary/[0.03] hover:border-primary/70 transition-all touch-target"
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="block font-black text-lg tracking-tight truncate">{plot.name}</span>
+                      <span className="text-[10px] font-black uppercase tracking-widest bg-primary/15 text-primary px-2 py-0.5 rounded-full shrink-0">Shared</span>
+                    </div>
+                    <span className="text-xs font-medium text-on-surface-variant">
+                      {planted} planted • {plot.description || 'Shared garden plot'}
+                    </span>
+                  </Link>
+                );
+              })}
+            </div>
+          )}
+
+          {/* Beds not in a plot yet */}
+          {standaloneBeds.length > 0 && (
+            <div className="space-y-4 pt-4">
+              <div className="flex items-center justify-between">
+                <h2 className="text-2xl font-headline font-black tracking-tight flex items-center gap-2">
+                  <Sprout size={20} className="text-primary" /> Beds not in a plot
+                </h2>
+                <div className="bg-surface-container-high px-3 py-1 rounded-full text-[10px] font-black text-on-surface-variant uppercase tracking-widest">
+                  {standaloneBeds.length} Total
+                </div>
+              </div>
+              <p className="text-xs font-medium text-on-surface-variant -mt-2">
+                Beds waiting for a home. Open one to put it in a plot, or add them while creating a plot.
+              </p>
+              {standaloneBeds.map((bed) => (
+                <Link
+                  key={bed.id}
+                  to={`/beds/${bed.id}`}
+                  className="flex items-center justify-between p-5 rounded-[2rem] bg-white border border-outline-variant/30 hover:border-primary/50 transition-all touch-target"
+                >
+                  <div className="flex items-center gap-3 min-w-0">
+                    <div className="w-10 h-10 rounded-2xl bg-primary/10 flex items-center justify-center shrink-0">
+                      <Sprout size={18} className="text-primary" />
+                    </div>
+                    <div className="min-w-0">
+                      <span className="block font-black tracking-tight truncate">{bed.name}</span>
+                      <span className="text-xs font-medium text-on-surface-variant">
+                        {bed.size.w} × {bed.size.h} cells
+                      </span>
+                    </div>
+                  </div>
+                  <ChevronRight size={20} className="text-primary shrink-0" />
+                </Link>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Expenses Report */}
@@ -660,6 +816,52 @@ export default function Plots() {
           </div>
         )}
       </AnimatePresence>
+      {/* Join shared plot with an invite code */}
+      <AnimatePresence>
+        {showJoin && (
+          <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center sm:p-4">
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setShowJoin(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ y: 80, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 80, opacity: 0 }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              className="relative w-full sm:max-w-md bg-white rounded-t-[2rem] sm:rounded-[2.5rem] shadow-2xl overflow-hidden p-8 space-y-6"
+            >
+              <div className="flex justify-between items-center">
+                <h3 className="text-2xl font-headline font-black tracking-tight">Join a shared plot</h3>
+                <button onClick={() => setShowJoin(false)} className="p-2 hover:bg-stone-100 rounded-full text-on-surface-variant" aria-label="Close">
+                  <X size={24} />
+                </button>
+              </div>
+              <p className="text-sm font-medium text-on-surface-variant">
+                Ask the plot owner for their invite code. You'll garden in their plot — no rebuilding.
+              </p>
+              <form onSubmit={handleJoinPlot} className="space-y-4">
+                <input
+                  type="text"
+                  autoFocus
+                  value={joinCode}
+                  onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
+                  placeholder="e.g. KX7Q2M9P"
+                  maxLength={16}
+                  className="w-full bg-surface-container-low border-none rounded-2xl px-6 py-4 font-black text-2xl tracking-[0.3em] text-center focus:ring-2 focus:ring-primary/20 uppercase"
+                />
+                <button
+                  type="submit"
+                  disabled={joining || !joinCode.trim()}
+                  className="w-full py-4 rounded-2xl bg-primary text-white font-black shadow-lg shadow-primary/20 hover:scale-[1.02] transition-all disabled:opacity-40 touch-target"
+                >
+                  {joining ? 'Joining…' : 'Join plot'}
+                </button>
+              </form>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
       <DeleteConfirmationModal
         isOpen={showDeleteModal}
         onClose={() => {

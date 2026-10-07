@@ -49,12 +49,27 @@ export function ActivePlotProvider({ children }: { children: React.ReactNode }) 
       setPlots([]);
       return;
     }
-    const q = query(collection(db, 'spatial_plots'), where('ownerUid', '==', user.uid));
-    const unsub = onSnapshot(q, (snap) => {
-      const list = snap.docs.map((d) => ({ id: d.id, name: (d.data().name as string) || 'Untitled Plot' }));
-      setPlots(list);
+    // Owned plots plus plots shared with me (invite code).
+    const ownedQ = query(collection(db, 'spatial_plots'), where('ownerUid', '==', user.uid));
+    const sharedQ = query(collection(db, 'spatial_plots'), where('collaboratorUids', 'array-contains', user.uid));
+    const apply = (owned: typeof plots, shared: typeof plots) => {
+      const seen = new Set(owned.map((p) => p.id));
+      setPlots([...owned, ...shared.filter((p) => !seen.has(p.id))]);
+    };
+    let ownedList: typeof plots = [];
+    let sharedList: typeof plots = [];
+    const unsubOwned = onSnapshot(ownedQ, (snap) => {
+      ownedList = snap.docs.map((d) => ({ id: d.id, name: (d.data().name as string) || 'Untitled Plot' }));
+      apply(ownedList, sharedList);
     });
-    return () => unsub();
+    const unsubShared = onSnapshot(sharedQ, (snap) => {
+      sharedList = snap.docs.map((d) => ({ id: d.id, name: (d.data().name as string) || 'Untitled Plot' }));
+      apply(ownedList, sharedList);
+    });
+    return () => {
+      unsubOwned();
+      unsubShared();
+    };
   }, [user]);
 
   // Default to the first plot when nothing is selected yet (or the saved one is gone).

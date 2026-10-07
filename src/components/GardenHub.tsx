@@ -29,14 +29,19 @@ export default function GardenHub() {
     (async () => {
       try {
         const uid = user.uid;
-        const [plotsSnap, inhabitantsSnap, tasksSnap, eventsSnap] = await Promise.all([
+        const [plotsSnap, sharedSnap, inhabitantsSnap, tasksSnap, eventsSnap] = await Promise.all([
           getDocs(query(collection(db, 'spatial_plots'), where('ownerUid', '==', uid))),
+          getDocs(query(collection(db, 'spatial_plots'), where('collaboratorUids', 'array-contains', uid))),
           getDocs(query(collection(db, 'inhabitants'), where('ownerUid', '==', uid))),
           getDocs(query(collection(db, 'tasks'), where('ownerUid', '==', uid), where('completed', '==', false))),
           getDocs(query(collection(db, 'calendar_events'), where('ownerUid', '==', uid))),
         ]);
         if (cancelled) return;
-        const plots = plotsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
+        const seen = new Set(plotsSnap.docs.map((d) => d.id));
+        const plots = [
+          ...plotsSnap.docs.map(d => ({ id: d.id, ...d.data() })),
+          ...sharedSnap.docs.filter((d) => !seen.has(d.id)).map(d => ({ id: d.id, ...d.data() })),
+        ];
         const inhabitants = inhabitantsSnap.docs.map(d => ({ id: d.id, ...d.data() }));
         const today = startOfDay(new Date());
         const weekOut = addDays(today, 7);

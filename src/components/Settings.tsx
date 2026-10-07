@@ -31,7 +31,7 @@ import { db } from '../firebase';
 import Rules from './Rules';
 
 export default function Settings() {
-  const { user, logout } = useFirebase();
+  const { user, logout, isAnonymous, signInWithGoogle } = useFirebase();
   const { 
     theme, setTheme, 
     font, setFont, 
@@ -249,6 +249,33 @@ export default function Settings() {
           </div>
         </section>
 
+        {/* Account */}
+        <section className="bg-surface-container-low rounded-[2.5rem] p-8 border border-outline-variant/10 shadow-sm space-y-4">
+          <div className="flex items-center gap-3">
+            <User className="text-primary" size={20} />
+            <h3 className="text-xs font-black uppercase tracking-[0.2em] text-outline">Account</h3>
+          </div>
+          {isAnonymous ? (
+            <div className="space-y-3">
+              <p className="text-sm font-medium text-on-surface-variant leading-relaxed">
+                You're gardening as a <span className="font-black text-on-surface">guest</span> — your garden
+                lives in this browser only. Back it up with Google to keep it across devices and share plots.
+              </p>
+              <button
+                onClick={signInWithGoogle}
+                className="w-full py-4 rounded-2xl bg-primary text-white font-black uppercase tracking-widest text-sm shadow-lg shadow-primary/20 hover:scale-[1.02] transition-all touch-target"
+              >
+                Back up with Google
+              </button>
+            </div>
+          ) : (
+            <p className="text-sm font-medium text-on-surface-variant leading-relaxed">
+              Signed in with Google as <span className="font-black text-on-surface">{user?.email || user?.displayName || 'you'}</span>.
+              Your garden syncs across devices and you can share plots.
+            </p>
+          )}
+        </section>
+
         {/* Settings Sections */}
         {sections.map((section, idx) => (
           <section key={idx} className="space-y-6">
@@ -328,7 +355,7 @@ export default function Settings() {
             className="w-full flex items-center justify-center gap-3 p-6 bg-error/5 text-error rounded-[2rem] font-black uppercase tracking-widest text-sm hover:bg-error/10 transition-all border border-error/10"
           >
             <LogOut size={20} />
-            Sign Out of The Farm
+            Sign Out of Plotwise
           </button>
           <p className="text-center mt-6 text-[10px] font-bold text-outline uppercase tracking-widest opacity-50">
             Version 2.4.0 • Built with AI Studio

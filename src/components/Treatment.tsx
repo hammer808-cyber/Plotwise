@@ -15,6 +15,7 @@ import { logEvent } from '../services/eventService';
 import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import TreatmentConflictModal from './TreatmentConflictModal';
 import DiagnosisPanel, { DiagnosisCandidate, DiagnosisResult } from './DiagnosisPanel';
+import CorrectionReviewList from './CorrectionReviewList';
 
 const DISEASE_DATABASE = [
   {
@@ -841,6 +842,9 @@ export default function Treatment() {
           </div>
         </div>
       </section>
+
+      {/* AI Correction Review */}
+      <CorrectionReviewList />
 
       {/* Disease Database Grid */}
       <section className="space-y-8 relative">

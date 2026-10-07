@@ -1,16 +1,17 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { doc, onSnapshot, collection, query, where } from 'firebase/firestore';
+import { doc, onSnapshot, collection, query, where, updateDoc, getDocs, getDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { averageVigor } from '../lib/vigor';
 import { useActivePlot } from '../contexts/ActivePlotContext';
-import { ArrowLeft, Leaf, Ruler, Activity, Plus, Stethoscope, Pencil, Copy } from 'lucide-react';
+import { ArrowLeft, Leaf, Ruler, Activity, Plus, Stethoscope, Pencil, Copy, Fence, X } from 'lucide-react';
+import { findFreeSpot } from '../lib/bedPlacement';
 import { toast } from 'sonner';
 import { duplicateBed } from '../lib/duplicateBed';
 import { handleFirestoreError, OperationType } from '../firebase';
 import { cn } from '@/src/lib/utils';
-import { AnimatePresence } from 'motion/react';
+import { AnimatePresence, motion } from 'motion/react';
 import HealthCheckWizard from './HealthCheckWizard';
 import BedEditModal, { BedLike } from './BedEditModal';
 import PlantImage from './PlantImage';
@@ -47,17 +48,82 @@ export default function BedDetail() {
   const [gridDims, setGridDims] = useState({ cols: 30, rows: 20 });
   const [showEditor, setShowEditor] = useState(false);
   const [duplicating, setDuplicating] = useState(false);
+  const [showAddToPlot, setShowAddToPlot] = useState(false);
+  const [plotChoices, setPlotChoices] = useState<{ id: string; name: string; shared?: boolean }[]>([]);
+  const [addingToPlot, setAddingToPlot] = useState(false);
+
+  /** Combine this standalone bed into a plot: auto-places it, then opens the plot. */
+  const handleAddToPlot = async (targetPlotId: string) => {
+    if (!user || !bed || addingToPlot) return;
+    setAddingToPlot(true);
+    try {
+      const [targetSnap, bedsSnap] = await Promise.all([
+        getDoc(doc(db, 'spatial_plots', targetPlotId)),
+        getDocs(query(collection(db, 'planters'), where('plotId', '==', targetPlotId))),
+      ]);
+      if (!targetSnap.exists()) {
+        toast.error('Could not open that plot.');
+        return;
+      }
+      const gc = (targetSnap.data().gridConfig as { cols?: number; rows?: number } | undefined) || {};
+      const cols = gc.cols || 30;
+      const rows = gc.rows || 20;
+      const spot = findFreeSpot(
+        bedsSnap.docs.map((d) => ({ gridPosition: d.data().gridPosition, size: d.data().size })),
+        bed.size.w,
+        bed.size.h,
+        cols,
+        rows
+      );
+      if (!spot) {
+        toast.warning('No room for this bed in that plot.');
+        return;
+      }
+      await updateDoc(doc(db, 'planters', bed.id), { plotId: targetPlotId, gridPosition: spot });
+      toast.success(`"${bed.name || 'Bed'}" is now in "${(targetSnap.data().name as string) || 'the plot'}" — drag it wherever you want.`);
+      setShowAddToPlot(false);
+      navigate(`/plots/${targetPlotId}/beds/${bed.id}`);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, `planters/${bed.id}`);
+    } finally {
+      setAddingToPlot(false);
+    }
+  };
+
+  const openAddToPlot = async () => {
+    if (!user) return;
+    try {
+      const [owned, shared] = await Promise.all([
+        getDocs(query(collection(db, 'spatial_plots'), where('ownerUid', '==', user.uid))),
+        getDocs(query(collection(db, 'spatial_plots'), where('collaboratorUids', 'array-contains', user.uid))),
+      ]);
+      const seen = new Set<string>();
+      const list: { id: string; name: string; shared?: boolean }[] = [];
+      for (const d of owned.docs) {
+        seen.add(d.id);
+        list.push({ id: d.id, name: (d.data().name as string) || 'Untitled Plot' });
+      }
+      for (const d of shared.docs) {
+        if (!seen.has(d.id)) list.push({ id: d.id, name: (d.data().name as string) || 'Shared Plot', shared: true });
+      }
+      setPlotChoices(list);
+      setShowAddToPlot(true);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.LIST, 'spatial_plots');
+    }
+  };
 
   const handleDuplicateBed = async () => {
     if (!user || !bed || !plotId || duplicating) return;
     setDuplicating(true);
     try {
       const result = await duplicateBed({
-        bed: { ...bed, plotId, ownerUid: user.uid },
+        bed: { ...bed, plotId: plotId || null, ownerUid: user.uid },
         plants,
         siblingBeds: otherBeds,
         plotCols: gridDims.cols,
         plotRows: gridDims.rows,
+        standalone: !plotId,
       });
       if (!result) {
         toast.warning('No room for a copy — the plot is full.');
@@ -78,17 +144,27 @@ export default function BedDetail() {
   }, [plotId, setActivePlotId]);
 
   useEffect(() => {
-    if (!user || !plotId || !bedId) return;
-    const unsubPlot = onSnapshot(doc(db, 'spatial_plots', plotId), (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        setPlotName((data.name as string) || 'Plot');
-        const gc = data.gridConfig as { cols?: number; rows?: number } | undefined;
-        if (gc) setGridDims({ cols: gc.cols || 30, rows: gc.rows || 20 });
-      }
-    });
+    if (!user || !bedId) return;
+    // Standalone beds (no plotId) live outside any plot until combined into one.
+    let unsubPlot: () => void;
+    if (plotId) {
+      unsubPlot = onSnapshot(doc(db, 'spatial_plots', plotId), (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          setPlotName((data.name as string) || 'Plot');
+          const gc = data.gridConfig as { cols?: number; rows?: number } | undefined;
+          if (gc) setGridDims({ cols: gc.cols || 30, rows: gc.rows || 20 });
+        }
+      });
+    } else {
+      setPlotName('');
+      setGridDims({ cols: 60, rows: 60 }); // free growth while unplotted
+      unsubPlot = () => {};
+    }
     const unsubBeds = onSnapshot(
-      query(collection(db, 'planters'), where('ownerUid', '==', user.uid), where('plotId', '==', plotId)),
+      plotId
+        ? query(collection(db, 'planters'), where('plotId', '==', plotId))
+        : query(collection(db, 'planters'), where('ownerUid', '==', user.uid), where('plotId', '==', null)),
       (snap) => {
         setOtherBeds(
           snap.docs
@@ -97,24 +173,32 @@ export default function BedDetail() {
         );
       }
     );
-    const unsubBed = onSnapshot(doc(db, 'planters', bedId), (snap) => {
-      if (snap.exists()) {
-        const data = snap.data();
-        if (data.plotId !== plotId || data.ownerUid !== user.uid) {
-          setBed(null);
+    const unsubBed = onSnapshot(
+      doc(db, 'planters', bedId),
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          // Read access itself is enforced by the Firestore rules (plot
+          // members can open each other's beds in a shared plot).
+          const plotMatch = plotId ? data.plotId === plotId : data.plotId == null;
+          if (!plotMatch) {
+            setBed(null);
+          } else {
+            setBed({ id: snap.id, ...(data as Omit<Bed, 'id'>) });
+          }
         } else {
-          setBed({ id: snap.id, ...(data as Omit<Bed, 'id'>) });
+          setBed(null);
         }
-      } else {
+        setLoading(false);
+      },
+      () => {
         setBed(null);
+        setLoading(false);
       }
-      setLoading(false);
-    });
-    const q = query(
-      collection(db, 'inhabitants'),
-      where('ownerUid', '==', user.uid),
-      where('plotId', '==', plotId)
     );
+    const q = plotId
+      ? query(collection(db, 'inhabitants'), where('plotId', '==', plotId))
+      : query(collection(db, 'inhabitants'), where('planterId', '==', bedId));
     const unsubPlants = onSnapshot(q, (snap) => {
       setPlants(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Inhabitant));
     });
@@ -138,7 +222,7 @@ export default function BedDetail() {
     return (
       <div className="p-6 text-center space-y-4">
         <p className="font-bold text-on-surface">This bed couldn't be found.</p>
-        <Link to={`/plots/${plotId}`} className="text-primary font-bold">Back to plot</Link>
+        <Link to={plotId ? `/plots/${plotId}` : '/plots'} className="text-primary font-bold">Back</Link>
       </div>
     );
   }
@@ -180,14 +264,18 @@ export default function BedDetail() {
       {/* Header */}
       <div className="flex items-center gap-3">
         <button
-          onClick={() => navigate(`/plots/${plotId}`)}
+          onClick={() => navigate(plotId ? `/plots/${plotId}` : '/plots')}
           className="p-2 rounded-full hover:bg-primary/10 text-primary transition-colors"
-          aria-label="Back to plot"
+          aria-label={plotId ? 'Back to plot' : 'Back to My Plots'}
         >
           <ArrowLeft size={22} />
         </button>
         <div className="min-w-0">
-          <p className="text-[11px] font-black uppercase tracking-widest text-on-surface-variant">{plotName}</p>
+          {plotId ? (
+            <p className="text-[11px] font-black uppercase tracking-widest text-on-surface-variant">{plotName}</p>
+          ) : (
+            <p className="text-[11px] font-black uppercase tracking-widest text-primary">Not in a plot yet</p>
+          )}
           <h1 className="font-headline font-black text-2xl text-on-surface tracking-tight truncate">{bed.name || 'Bed'}</h1>
         </div>
         <div className={cn('ml-auto text-right', vigorColor(bedVigor))}>
@@ -213,10 +301,18 @@ export default function BedDetail() {
 
       {/* Focused single-bed viewfinder — only this bed, nothing else */}
       <div className="bg-white rounded-[2rem] border border-outline-variant/30 p-5 shadow-sm">
-        <div className="flex items-center gap-4 text-[11px] font-bold text-on-surface-variant mb-4">
+        <div className="flex items-center gap-4 text-[11px] font-bold text-on-surface-variant mb-4 flex-wrap">
           <span className="flex items-center gap-1"><Ruler size={12} /> {bed.size.w}×{bed.size.h} cells</span>
           <span className="flex items-center gap-1"><Leaf size={12} /> {bedPlants.length} plant{bedPlants.length === 1 ? '' : 's'}</span>
           <span className="capitalize">{bed.type}</span>
+          {!plotId && (
+            <button
+              onClick={openAddToPlot}
+              className="ml-auto flex items-center gap-1.5 px-4 py-2 rounded-full bg-primary text-white text-[11px] font-black uppercase tracking-wider hover:scale-105 transition-transform touch-target"
+            >
+              <Fence size={14} /> Add to plot
+            </button>
+          )}
         </div>
         <div className="flex justify-center">
           <div
@@ -328,6 +424,62 @@ export default function BedDetail() {
             plants={bedPlants}
             onClose={() => setShowEditor(false)}
           />
+        )}
+      </AnimatePresence>
+
+      {/* Add standalone bed to a plot */}
+      <AnimatePresence>
+        {showAddToPlot && (
+          <div className="fixed inset-0 z-[100] flex items-end sm:items-center justify-center sm:p-4" role="dialog" aria-modal="true" aria-label="Add bed to plot">
+            <motion.div
+              initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
+              onClick={() => setShowAddToPlot(false)}
+              className="absolute inset-0 bg-black/40 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ y: 80, opacity: 0 }} animate={{ y: 0, opacity: 1 }} exit={{ y: 80, opacity: 0 }}
+              transition={{ type: 'spring', damping: 28, stiffness: 300 }}
+              className="relative w-full sm:max-w-md bg-white rounded-t-[2rem] sm:rounded-[2.5rem] shadow-2xl overflow-hidden p-6 space-y-4 max-h-[85dvh] overflow-y-auto"
+            >
+              <div className="flex items-start justify-between">
+                <div>
+                  <p className="text-[10px] font-black uppercase tracking-[0.2em] text-primary">Combine beds into a plot</p>
+                  <h3 className="text-xl font-headline font-black tracking-tight mt-1">Put "{bed.name || 'Bed'}" in…</h3>
+                  <p className="text-xs text-on-surface-variant font-medium mt-1">
+                    It lands in the first free spot — drag it wherever you want after.
+                  </p>
+                </div>
+                <button onClick={() => setShowAddToPlot(false)} className="p-2 hover:bg-stone-100 rounded-full text-on-surface-variant touch-target" aria-label="Close">
+                  <X size={22} />
+                </button>
+              </div>
+              {plotChoices.length === 0 ? (
+                <p className="text-sm font-medium text-on-surface-variant text-center py-6">
+                  No plots yet — create one first, then bring this bed along.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  {plotChoices.map((p) => (
+                    <button
+                      key={p.id}
+                      onClick={() => handleAddToPlot(p.id)}
+                      disabled={addingToPlot}
+                      className="w-full flex items-center justify-between p-5 rounded-2xl bg-surface-container-low hover:bg-primary/10 transition-colors disabled:opacity-40 touch-target text-left"
+                    >
+                      <span className="flex items-center gap-3 min-w-0">
+                        <Fence size={18} className="text-primary shrink-0" />
+                        <span className="font-black truncate">{p.name}</span>
+                        {p.shared && (
+                          <span className="text-[10px] font-black uppercase tracking-widest bg-primary/15 text-primary px-2 py-0.5 rounded-full shrink-0">Shared</span>
+                        )}
+                      </span>
+                      {addingToPlot ? <span className="text-xs font-bold text-on-surface-variant">Placing…</span> : null}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </motion.div>
+          </div>
         )}
       </AnimatePresence>
 
