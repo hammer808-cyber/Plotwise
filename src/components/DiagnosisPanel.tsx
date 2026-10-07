@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
 import { AlertTriangle, CheckCircle2, Eye, MessageCircleQuestion, Flag, BookOpen, RotateCcw } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
@@ -22,7 +22,7 @@ interface DiagnosisPanelProps {
   selectedId: string;
   onSelect: (id: string) => void;
   onRerun: (extraContext: string) => void;
-  onCorrection: (text: string) => void;
+  onCorrection: (text: string) => Promise<boolean>;
   onSkip: () => void;
   isDiagnosing: boolean;
 }
@@ -51,6 +51,18 @@ export default function DiagnosisPanel({
   const [correctionOpen, setCorrectionOpen] = useState(false);
   const [correctionText, setCorrectionText] = useState('');
   const [correctionSent, setCorrectionSent] = useState(false);
+  const [sending, setSending] = useState(false);
+
+  // A fresh diagnosis resets the panel's interactive state.
+  useEffect(() => {
+    setWrongCues({});
+    setShowAlternatives(false);
+    setQuestionsOpen(false);
+    setAnswers({});
+    setCorrectionOpen(false);
+    setCorrectionText('');
+    setCorrectionSent(false);
+  }, [diagnosis]);
 
   const candidates = diagnosis.candidates;
   const top = candidates[0];
@@ -76,10 +88,12 @@ export default function DiagnosisPanel({
     onRerun(`The gardener answered follow-up questions: ${parts.join('; ')}. Use these to refine your ranking.`);
   };
 
-  const sendCorrection = () => {
-    if (!correctionText.trim()) return;
-    onCorrection(correctionText.trim());
-    setCorrectionSent(true);
+  const sendCorrection = async () => {
+    if (!correctionText.trim() || sending) return;
+    setSending(true);
+    const ok = await onCorrection(correctionText.trim());
+    setSending(false);
+    if (ok) setCorrectionSent(true);
   };
 
   return (
@@ -282,11 +296,11 @@ export default function DiagnosisPanel({
             />
             <button
               type="button"
-              disabled={!correctionText.trim() || isDiagnosing}
+              disabled={!correctionText.trim() || isDiagnosing || sending}
               onClick={sendCorrection}
               className="mt-2 px-4 py-2 rounded-full bg-primary text-on-primary text-[11px] font-black uppercase tracking-widest disabled:opacity-50"
             >
-              Send correction
+              {sending ? 'Sending…' : 'Send correction'}
             </button>
           </div>
         )}

@@ -434,8 +434,9 @@ export default function Treatment() {
   };
 
   // Logs a wrong AI call to Firestore so corrections improve future suggestions.
-  const handleDiagnosisCorrection = async (text: string) => {
-    if (!user) return;
+  // Returns true only when the write actually landed.
+  const handleDiagnosisCorrection = async (text: string): Promise<boolean> => {
+    if (!user) return false;
     try {
       const cands = (diagnosisResult as DiagnosisResult)?.candidates || [];
       await addDoc(collection(db, 'ai_diagnosis_corrections'), {
@@ -445,12 +446,15 @@ export default function Treatment() {
         symptoms: formSymptoms,
         candidates: cands.map(c => ({ id: c.id, name: c.name, confidence: c.confidence })),
         correctionText: text,
+        reviewed: false,
         createdAt: serverTimestamp(),
       });
       setFormDiseaseId('manual');
       toast.success("Correction logged — thanks! Describe it manually below.");
+      return true;
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'ai_diagnosis_corrections');
+      return false;
     }
   };
 
