@@ -14,6 +14,7 @@ import { checkTreatmentConflict } from '../services/botanyService';
 import { logEvent } from '../services/eventService';
 import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import TreatmentConflictModal from './TreatmentConflictModal';
+import DiagnosisPanel, { DiagnosisCandidate, DiagnosisResult } from './DiagnosisPanel';
 
 const DISEASE_DATABASE = [
   {
@@ -310,7 +311,7 @@ export default function Treatment() {
     }
   };
 
-  const handleAIDiagnosis = async () => {
+  const handleAIDiagnosis = async (extraContext?: string) => {
     if (!formSymptoms || !formPlantId) {
       toast.error("Please select a plant and describe symptoms first.");
       return;
@@ -321,20 +322,33 @@ export default function Treatment() {
 
     const plant = allPlants.find(p => p.id === formPlantId);
 
+    const parseCandidates = (text: string): { id: string; confidence: number; cues: string[] }[] | null => {
+      try {
+        const cleaned = text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+        const parsed = JSON.parse(cleaned);
+        if (!parsed || !Array.isArray(parsed.candidates)) return null;
+        return parsed.candidates;
+      } catch {
+        return null;
+      }
+    };
+
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
-      
+
       const parts: any[] = [
-        { text: `As a botanical expert with 30 years of experience, identify the most likely plant disease or pest from the following list based on these symptoms: "${formSymptoms}". 
+        { text: `As a botanical expert with 30 years of experience, rank the most likely plant diseases or pests from the list below based on these symptoms: "${formSymptoms}".
         The plant is a ${plant?.name} (${plant?.type}).
-        
-        Available diseases in our database: ${DISEASE_DATABASE.map(d => d.name).join(', ')}.
-        
-        Consider the specific plant type and how these symptoms manifest in it. 
+        ${extraContext ? `Additional context from the gardener (treat as authoritative): "${extraContext}".\n` : ''}
+        Available diseases in our database: ${DISEASE_DATABASE.map(d => `${d.id} (${d.name})`).join(', ')}.
+
+        Consider the specific plant type and how these symptoms manifest in it.
         If an image is provided, use it as the primary source of truth.
-        Return ONLY the ID of the matching disease from this list: ${DISEASE_DATABASE.map(d => d.id).join(', ')}. 
-        If you are absolutely certain it is not in the list but you know what it is, return "unknown" and I will handle it.
-        If no match is found, return "unknown".` }
+
+        Return ONLY valid JSON, no code fences, shaped exactly like this:
+        {"candidates":[{"id":"<disease-id>","confidence":72,"cues":["short plain-language observation","another observation"]},{"id":"<disease-id>","confidence":21,"cues":["..."]}],"notes":"optional one-line caveat"}
+
+        Rules: up to 3 candidates, best first; confidence is 0-100 per candidate and should roughly sum to 100; cues are 2-3 short plain-language observations from the symptoms${formImage ? ' or image' : ''} that support that candidate (what you noticed); every id must come from the list above; if nothing in the list fits, return {"candidates":[]}.` }
       ];
 
       if (formImage) {
@@ -351,13 +365,58 @@ export default function Treatment() {
         contents: { parts },
       });
 
-      const resultId = response.text?.trim().toLowerCase();
-      const matchedDisease = DISEASE_DATABASE.find(d => d.id === resultId);
+      const raw = response.text?.trim() || '';
+      const parsed = parseCandidates(raw);
 
-      if (matchedDisease) {
-        setDiagnosisResult(matchedDisease);
-        setFormDiseaseId(matchedDisease.id);
-        toast.success(`AI identified: ${matchedDisease.name}`);
+      const buildResult = (items: { id: string; confidence: number; cues: string[] }[], notes?: string): DiagnosisResult | null => {
+        const mapped: DiagnosisCandidate[] = items
+          .map(item => {
+            const disease = DISEASE_DATABASE.find(d => d.id === String(item.id).toLowerCase());
+            if (!disease) return null;
+            const confidence = Math.max(0, Math.min(100, Math.round(Number(item.confidence) || 0)));
+            return {
+              id: disease.id,
+              name: disease.name,
+              description: disease.description,
+              confidence,
+              cues: Array.isArray(item.cues) ? item.cues.filter(c => typeof c === 'string').slice(0, 3) : [],
+              steps: disease.steps,
+            } as DiagnosisCandidate;
+          })
+          .filter((c): c is DiagnosisCandidate => c !== null)
+          .sort((a, b) => b.confidence - a.confidence)
+          .slice(0, 3);
+        if (mapped.length === 0) return null;
+        return { candidates: mapped, notes };
+      };
+
+      let result: DiagnosisResult | null = null;
+      let notes: string | undefined;
+      if (parsed) {
+        try {
+          const cleaned = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '').trim();
+          const maybeNotes = JSON.parse(cleaned).notes;
+          if (typeof maybeNotes === 'string' && maybeNotes.trim()) notes = maybeNotes.trim();
+        } catch { /* notes are optional */ }
+        result = buildResult(parsed, notes);
+      } else {
+        // Back-compat: model returned a bare disease id instead of JSON
+        const resultId = raw.toLowerCase();
+        const matchedDisease = DISEASE_DATABASE.find(d => d.id === resultId);
+        if (matchedDisease) {
+          result = buildResult([{ id: matchedDisease.id, confidence: 65, cues: [] }]);
+        }
+      }
+
+      if (result) {
+        setDiagnosisResult(result);
+        const top = result.candidates[0];
+        if (top.confidence >= 60) {
+          setFormDiseaseId(top.id);
+          toast.success(`AI identified: ${top.name} (${top.confidence}%)`);
+        } else {
+          toast.info("AI is unsure — review the options before picking one.");
+        }
       } else {
         setDiagnosisResult({ id: 'manual', name: "Unknown", description: "The AI couldn't confidently identify the issue. Please select manually or enter details below." });
         setFormDiseaseId('manual');
@@ -370,6 +429,27 @@ export default function Treatment() {
       toast.error("AI diagnosis failed.");
     } finally {
       setIsDiagnosing(false);
+    }
+  };
+
+  // Logs a wrong AI call to Firestore so corrections improve future suggestions.
+  const handleDiagnosisCorrection = async (text: string) => {
+    if (!user) return;
+    try {
+      const cands = (diagnosisResult as DiagnosisResult)?.candidates || [];
+      await addDoc(collection(db, 'ai_diagnosis_corrections'), {
+        ownerUid: user.uid,
+        plantId: formPlantId,
+        plantName: allPlants.find(p => p.id === formPlantId)?.name || '',
+        symptoms: formSymptoms,
+        candidates: cands.map(c => ({ id: c.id, name: c.name, confidence: c.confidence })),
+        correctionText: text,
+        createdAt: serverTimestamp(),
+      });
+      setFormDiseaseId('manual');
+      toast.success("Correction logged — thanks! Describe it manually below.");
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, 'ai_diagnosis_corrections');
     }
   };
 
@@ -888,7 +968,7 @@ export default function Treatment() {
                         <button 
                           type="button"
                           disabled={!formSymptoms || !formPlantId || isDiagnosing}
-                          onClick={handleAIDiagnosis}
+                          onClick={() => handleAIDiagnosis()}
                           className="absolute bottom-4 right-4 bg-primary text-white px-4 py-2 rounded-full text-[10px] font-black uppercase tracking-widest shadow-lg disabled:opacity-50 flex items-center gap-2"
                         >
                           {isDiagnosing ? <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" /> : <ShieldCheck size={14} />}
@@ -930,7 +1010,17 @@ export default function Treatment() {
                       </div>
                     </div>
 
-                    {diagnosisResult && (
+                    {diagnosisResult && (diagnosisResult as DiagnosisResult).candidates ? (
+                      <DiagnosisPanel
+                        diagnosis={diagnosisResult as DiagnosisResult}
+                        selectedId={formDiseaseId}
+                        onSelect={(id) => setFormDiseaseId(id)}
+                        onRerun={(ctx) => handleAIDiagnosis(ctx)}
+                        onCorrection={handleDiagnosisCorrection}
+                        onSkip={() => setDiagnosisResult(null)}
+                        isDiagnosing={isDiagnosing}
+                      />
+                    ) : diagnosisResult && (
                       <motion.div 
                         initial={{ opacity: 0, y: 10 }}
                         animate={{ opacity: 1, y: 0 }}
