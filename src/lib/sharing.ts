@@ -8,6 +8,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 import { db, handleFirestoreError, OperationType } from '../firebase';
+import { isInviteCode, joinDisplayName, makeInviteCode, makeJoinNonce } from './inviteCode';
 
 /**
  * Plot sharing via invite codes.
@@ -20,15 +21,7 @@ import { db, handleFirestoreError, OperationType } from '../firebase';
  *   but can't delete beds/the plot or manage sharing — that's the owner's job.
  */
 
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789'; // no lookalikes
-
-export function makeInviteCode(length = 8): string {
-  let code = '';
-  const bytes = new Uint32Array(length);
-  crypto.getRandomValues(bytes);
-  for (let i = 0; i < length; i++) code += CODE_ALPHABET[bytes[i] % CODE_ALPHABET.length];
-  return code;
-}
+export { makeInviteCode } from './inviteCode';
 
 export interface PlotInvite {
   plotId: string;
@@ -67,32 +60,46 @@ export async function revokeInvite(plotId: string, code: string): Promise<void> 
 }
 
 /**
- * Join a shared plot with an invite code. Adds ONLY the joining user —
- * the rules reject anything else. No plot read needed first: arrayUnion
- * plus a dot-notation name write, both validated by the isSelfJoin rule.
+ * Join a shared plot with an invite code. Adds ONLY the joining user.
+ * The code is proved by claiming a fresh nonce on plot_invites/{code}
+ * (get-by-id only — the collection is not listable) and echoing that
+ * nonce onto the plot. Rules reject a join that skips this, so knowing
+ * the plot id is not enough to come back after removal or a revoked code.
  */
 export async function joinPlotWithCode(
   rawCode: string,
   user: { uid: string; displayName: string | null }
 ): Promise<{ plotId: string; plotName: string }> {
   const code = rawCode.trim().toUpperCase();
-  if (!code) throw new Error('Enter the invite code.');
+  if (!isInviteCode(code)) throw new Error('Enter the invite code.');
   let inviteSnap;
   try {
     inviteSnap = await getDoc(doc(db, 'plot_invites', code));
   } catch (error) {
-    handleFirestoreError(error, OperationType.LIST, 'plot_invites');
+    handleFirestoreError(error, OperationType.GET, `plot_invites/${code}`);
     throw error;
   }
   if (!inviteSnap.exists()) throw new Error('That code did not match any shared plot.');
   const invite = inviteSnap.data() as PlotInvite;
   if (invite.createdBy === user.uid) throw new Error('That is your own plot — no need to join it.');
 
+  const nonce = makeJoinNonce();
+  try {
+    await updateDoc(doc(db, 'plot_invites', code), {
+      claimedBy: user.uid,
+      claimNonce: nonce,
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, `plot_invites/${code}`);
+    throw error;
+  }
+
   const plotRef = doc(db, 'spatial_plots', invite.plotId);
   try {
     await updateDoc(plotRef, {
       collaboratorUids: arrayUnion(user.uid),
-      [`collaboratorNames.${user.uid}`]: user.displayName || 'Gardener',
+      [`collaboratorNames.${user.uid}`]: joinDisplayName(user.displayName),
+      joinNonce: nonce,
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.UPDATE, `spatial_plots/${invite.plotId}`);
