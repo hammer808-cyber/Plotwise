@@ -6,15 +6,16 @@ import { cn } from '@/src/lib/utils';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { useActivePlot } from '../contexts/ActivePlotContext';
 import { db, collection, query, where, onSnapshot, handleFirestoreError, OperationType, addDoc, serverTimestamp, deleteDoc, doc, deleteField, batchDelete } from '../firebase';
-import { getPlantInfo } from '../constants/plants';
+import { getPlantInfo, PLANT_DATABASE } from '../constants/plants';
 import { PLANT_PLACEHOLDER } from '../lib/plantImage';
 import { Inhabitant, SpatialPlot, EventLog } from '../types';
 import { calculateVigorIndex } from '../lib/botany';
-import { Trash2, CheckSquare, Square, Table, LayoutGrid, ExternalLink, X, MapPin, Edit2, Download, CheckCircle, Plus, ChevronUp, ChevronDown, Activity, Droplets as WaterIcon, Bug } from 'lucide-react';
+import { Trash2, CheckSquare, Square, Table, LayoutGrid, ExternalLink, X, MapPin, Edit2, Download, CheckCircle, Plus, ChevronUp, ChevronDown, Activity, Droplets as WaterIcon, Bug, Sun, Stethoscope } from 'lucide-react';
 import { toast } from 'sonner';
 import { format, addDays } from 'date-fns';
 import { updateDoc } from 'firebase/firestore';
 import { DeleteConfirmationModal } from './DeleteConfirmationModal';
+import HealthCheckWizard from './HealthCheckWizard';
 
 export default function Inventory() {
   const { user } = useFirebase();
@@ -42,13 +43,16 @@ export default function Inventory() {
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
   const [isEditEquipmentModalOpen, setIsEditEquipmentModalOpen] = useState(false);
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
+  const [librarySearch, setLibrarySearch] = useState('');
+  const [healthCheckPlant, setHealthCheckPlant] = useState<Inhabitant | null>(null);
   const [newPlantData, setNewPlantData] = useState<any>({
     name: '',
     scientific: '',
     type: 'Herb',
     waterFreq: 'Regular',
     sunExposure: 'Full Sun',
-    notes: ''
+    notes: '',
+    quantity: 1
   });
   const [newEquipmentData, setNewEquipmentData] = useState<any>({
     name: '',
@@ -68,7 +72,8 @@ export default function Inventory() {
           type: initialPlant.type || 'Herb',
           waterFreq: initialPlant.water || 'Regular',
           sunExposure: initialPlant.sun || 'Full Sun',
-          notes: initialPlant.description || ''
+          notes: initialPlant.description || '',
+          quantity: 1
         });
       }
       setIsAddModalOpen(true);
@@ -228,16 +233,21 @@ export default function Inventory() {
         createdAt: serverTimestamp()
       };
 
-      await addDoc(collection(db, 'inhabitants'), plantData);
-      toast.success('Plant added to inventory!');
+      const qty = Math.max(1, Math.min(12, Number(newPlantData.quantity) || 1));
+      for (let i = 0; i < qty; i++) {
+        await addDoc(collection(db, 'inhabitants'), plantData);
+      }
+      toast.success(qty > 1 ? `${qty} plants added to your list!` : 'Plant added to your list!');
       setIsAddModalOpen(false);
+      setLibrarySearch('');
       setNewPlantData({
         name: '',
         scientific: '',
         type: 'Herb',
         waterFreq: 'Regular',
         sunExposure: 'Full Sun',
-        notes: ''
+        notes: '',
+        quantity: 1
       });
     } catch (error) {
       console.error('Error adding plant:', error);
@@ -326,6 +336,15 @@ export default function Inventory() {
     return matchesFilter && matchesSearch && matchesPlot;
   });
 
+  // Library quick-pick for the add-plant form (keeps the library's real care data).
+  const libraryMatches = (() => {
+    const q = librarySearch.trim().toLowerCase();
+    if (q.length < 2) return [];
+    return PLANT_DATABASE.filter(p =>
+      p.name.toLowerCase().includes(q) || p.scientific.toLowerCase().includes(q)
+    ).slice(0, 6);
+  })();
+
   const renderTable = () => (
     <div className="overflow-x-auto bg-surface-container-low rounded-[2rem] border border-outline-variant/10 shadow-sm">
       <table className="w-full text-left border-collapse">
@@ -349,6 +368,8 @@ export default function Inventory() {
                 Vigor Index {sortConfig.key === 'vigorIndex' && (sortConfig.direction === 'asc' ? <ChevronUp size={12} /> : <ChevronDown size={12} />)}
               </div>
             </th>
+            <th className="p-4 font-label text-[10px] uppercase tracking-widest text-on-surface-variant">Water</th>
+            <th className="p-4 font-label text-[10px] uppercase tracking-widest text-on-surface-variant">Sun</th>
             <th className="p-4 font-label text-[10px] uppercase tracking-widest text-on-surface-variant">Status</th>
             <th className="p-4 font-label text-[10px] uppercase tracking-widest text-on-surface-variant">Plot</th>
             <th className="p-4 font-label text-[10px] uppercase tracking-widest text-on-surface-variant">Last Event</th>
@@ -388,6 +409,18 @@ export default function Inventory() {
                   </div>
                 </td>
                 <td className="p-4">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-on-surface whitespace-nowrap">
+                    <Droplets size={14} className="text-sky-600 shrink-0" />
+                    {item.waterFreq || '—'}
+                  </div>
+                </td>
+                <td className="p-4">
+                  <div className="flex items-center gap-1.5 text-xs font-semibold text-on-surface whitespace-nowrap">
+                    <Sun size={14} className="text-amber-500 shrink-0" />
+                    {item.sunExposure || '—'}
+                  </div>
+                </td>
+                <td className="p-4">
                   <span className={cn(
                     "px-2 py-0.5 text-[9px] font-black uppercase tracking-widest rounded-md",
                     item.status === 'Struggling' ? "bg-rose-100 text-rose-700" : "bg-emerald-100 text-emerald-700"
@@ -409,6 +442,9 @@ export default function Inventory() {
                 </td>
                 <td className="p-4 text-right">
                   <div className="flex justify-end gap-2">
+                    <button onClick={() => setHealthCheckPlant(item)} title="Log care" aria-label={`Log care for ${item.name}`} className="p-2 hover:bg-primary/10 rounded-lg text-primary transition-colors touch-target">
+                      <Stethoscope size={16} />
+                    </button>
                     <button onClick={() => navigate(`/plant/${item.id}`)} className="p-2 hover:bg-primary/10 rounded-lg text-primary transition-colors touch-target">
                       <ArrowRight size={16} />
                     </button>
@@ -634,7 +670,24 @@ export default function Inventory() {
       </div>
 
       {/* Inventory Content */}
-      {viewMode === 'Table' && inventoryType === 'Plants' ? renderTable() : (
+      {filteredItems.length === 0 ? (
+        <div className="text-center py-20 px-6 bg-surface-container-low rounded-[2rem] border border-dashed border-outline-variant/30">
+          <div className="mx-auto w-16 h-16 rounded-full bg-primary/10 text-primary flex items-center justify-center mb-4">
+            <Leaf size={28} />
+          </div>
+          <h3 className="font-headline text-2xl font-black mb-2">No plants on your list yet</h3>
+          <p className="text-on-surface-variant max-w-sm mx-auto mb-6">
+            Build your plant list first — track water, sun and health for each plant.
+            You can place them into beds whenever you're ready.
+          </p>
+          <button
+            onClick={() => setIsAddModalOpen(true)}
+            className="inline-flex items-center gap-2 px-8 py-4 bg-primary text-on-primary rounded-[2rem] font-bold shadow-lg shadow-primary/20 active:scale-95 transition-all"
+          >
+            <Plus size={20} /> Add your first plant
+          </button>
+        </div>
+      ) : viewMode === 'Table' && inventoryType === 'Plants' ? renderTable() : (
         <div className="grid grid-cols-1 md:grid-cols-12 gap-6">
           <AnimatePresence mode="popLayout">
             {filteredItems.map((item, idx) => (
@@ -703,6 +756,18 @@ export default function Inventory() {
                   {inventoryType === 'Plants' && (
                     <p className={cn("text-sm italic mt-1", idx % 3 === 1 ? "text-white/70" : "text-on-surface-variant")}>{item.latinName || item.scientific}</p>
                   )}
+                  {inventoryType === 'Plants' && (
+                    <div className={cn("flex items-center gap-4 mt-3 text-xs font-semibold", idx % 3 === 1 ? "text-white/80" : "text-on-surface-variant")}>
+                      <span className="flex items-center gap-1.5">
+                        <Droplets size={13} className={idx % 3 === 1 ? "text-white" : "text-sky-600"} />
+                        {item.waterFreq || '—'}
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        <Sun size={13} className={idx % 3 === 1 ? "text-white" : "text-amber-500"} />
+                        {item.sunExposure || '—'}
+                      </span>
+                    </div>
+                  )}
                   {inventoryType === 'Equipment' && (
                     <p className={cn("text-sm mt-1", idx % 3 === 1 ? "text-white/70" : "text-on-surface-variant")}>Qty: {item.quantity}</p>
                   )}
@@ -770,6 +835,19 @@ export default function Inventory() {
                         <ArrowRight size={20} />
                       </div>
                       
+                      <motion.button
+                        whileHover={{ scale: 1.1 }}
+                        whileTap={{ scale: 0.9 }}
+                        onClick={(e) => { e.stopPropagation(); setHealthCheckPlant(item); }}
+                        title="Log care"
+                        aria-label={`Log care for ${item.name}`}
+                        className={cn(
+                          "w-12 h-12 rounded-full flex items-center justify-center transition-all duration-300",
+                          idx % 3 === 1 ? "bg-white/20 text-white hover:bg-white/30" : "bg-surface-container-high text-primary hover:bg-surface-container-highest shadow-sm"
+                        )}
+                      >
+                        <Stethoscope size={20} />
+                      </motion.button>
                       <motion.button
                         whileHover={{ scale: 1.1 }}
                         whileTap={{ scale: 0.9 }}
@@ -862,6 +940,46 @@ export default function Inventory() {
                   {inventoryType === 'Plants' ? (
                     <div className="space-y-4">
                       <div className="space-y-2">
+                        <label className="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant/60 ml-4">Quick pick from library</label>
+                        <input
+                          value={librarySearch}
+                          onChange={(e) => setLibrarySearch(e.target.value)}
+                          placeholder="Search the plant library…"
+                          className="w-full bg-surface-container-low border-none rounded-2xl px-6 py-4 font-bold focus:ring-2 focus:ring-primary/20 transition-all"
+                        />
+                        {libraryMatches.length > 0 && (
+                          <div className="rounded-2xl overflow-hidden border border-outline-variant/20 divide-y divide-outline-variant/10 max-h-56 overflow-y-auto">
+                            {libraryMatches.map(m => (
+                              <button
+                                type="button"
+                                key={m.name}
+                                onClick={() => {
+                                  setNewPlantData({
+                                    ...newPlantData,
+                                    name: m.name,
+                                    scientific: m.scientific,
+                                    type: m.type,
+                                    waterFreq: m.water,
+                                    sunExposure: m.sun,
+                                    notes: m.description || newPlantData.notes
+                                  });
+                                  setLibrarySearch('');
+                                }}
+                                className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-primary/5 transition-colors"
+                              >
+                                <img src={m.image} alt="" className="w-10 h-10 rounded-xl object-cover shrink-0" />
+                                <div className="min-w-0">
+                                  <div className="font-bold text-sm truncate">{m.name}</div>
+                                  <div className="text-[11px] italic text-on-surface-variant truncate">{m.scientific}</div>
+                                </div>
+                                <span className="ml-auto text-[10px] font-black uppercase tracking-widest text-on-surface-variant/60 shrink-0">{m.type}</span>
+                              </button>
+                            ))}
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-2">
                         <label className="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant/60 ml-4">Plant Name</label>
                         <input 
                           required
@@ -890,11 +1008,9 @@ export default function Inventory() {
                             onChange={(e) => setNewPlantData({ ...newPlantData, type: e.target.value })}
                             className="w-full bg-surface-container-low border-none rounded-2xl px-6 py-4 font-bold focus:ring-2 focus:ring-primary/20 transition-all appearance-none"
                           >
-                            <option value="Herb">Herb</option>
-                            <option value="Vegetable">Vegetable</option>
-                            <option value="Fruit">Fruit</option>
-                            <option value="Flower">Flower</option>
-                            <option value="Succulent">Succulent</option>
+                            {Array.from(new Set(['Herb', 'Vegetable', 'Fruit', 'Flower', 'Succulent', newPlantData.type])).map(o => (
+                              <option key={o} value={o}>{o}</option>
+                            ))}
                           </select>
                         </div>
                         <div className="space-y-2">
@@ -904,9 +1020,9 @@ export default function Inventory() {
                             onChange={(e) => setNewPlantData({ ...newPlantData, waterFreq: e.target.value })}
                             className="w-full bg-surface-container-low border-none rounded-2xl px-6 py-4 font-bold focus:ring-2 focus:ring-primary/20 transition-all appearance-none"
                           >
-                            <option value="Regular">Regular</option>
-                            <option value="Frequent">Frequent</option>
-                            <option value="Sparse">Sparse</option>
+                            {Array.from(new Set(['Regular', 'Frequent', 'Sparse', newPlantData.waterFreq])).map(o => (
+                              <option key={o} value={o}>{o}</option>
+                            ))}
                           </select>
                         </div>
                       </div>
@@ -918,10 +1034,29 @@ export default function Inventory() {
                           onChange={(e) => setNewPlantData({ ...newPlantData, sunExposure: e.target.value })}
                           className="w-full bg-surface-container-low border-none rounded-2xl px-6 py-4 font-bold focus:ring-2 focus:ring-primary/20 transition-all appearance-none"
                         >
-                          <option value="Full Sun">Full Sun</option>
-                          <option value="Partial Shade">Partial Shade</option>
-                          <option value="Full Shade">Full Shade</option>
+                          {Array.from(new Set(['Full Sun', 'Partial Shade', 'Full Shade', newPlantData.sunExposure])).map(o => (
+                            <option key={o} value={o}>{o}</option>
+                          ))}
                         </select>
+                      </div>
+
+                      <div className="space-y-2">
+                        <label className="text-[10px] font-black uppercase tracking-[0.2em] text-on-surface-variant/60 ml-4">Quantity</label>
+                        <div className="flex items-center gap-4 bg-surface-container-low rounded-2xl px-4 py-2 w-fit">
+                          <button
+                            type="button"
+                            onClick={() => setNewPlantData({ ...newPlantData, quantity: Math.max(1, (Number(newPlantData.quantity) || 1) - 1) })}
+                            className="p-2 rounded-full hover:bg-primary/10 text-primary font-black text-xl leading-none touch-target"
+                            aria-label="Decrease quantity"
+                          >−</button>
+                          <span className="font-black text-lg w-8 text-center">{newPlantData.quantity}</span>
+                          <button
+                            type="button"
+                            onClick={() => setNewPlantData({ ...newPlantData, quantity: Math.min(12, (Number(newPlantData.quantity) || 1) + 1) })}
+                            className="p-2 rounded-full hover:bg-primary/10 text-primary font-black text-xl leading-none touch-target"
+                            aria-label="Increase quantity"
+                          >+</button>
+                        </div>
                       </div>
 
                       <div className="space-y-2">
@@ -1321,6 +1456,13 @@ export default function Inventory() {
         itemCount={selectedIds.length}
         isDeleting={isDeleting}
       />
+
+      {healthCheckPlant && (
+        <HealthCheckWizard
+          plant={healthCheckPlant}
+          onClose={() => setHealthCheckPlant(null)}
+        />
+      )}
     </div>
   );
 }
