@@ -97,6 +97,8 @@ service cloud.firestore {
     //   - spatial_plots.collaboratorNames: map uid->display name
     //   - spatial_plots.activeInviteCode: string|null - current invite code (owner-only)
     //   - Anyone with a code joins by adding ONLY themselves (rules-enforced).
+    //     The code is the plot_invites document id: get is allowed, list is not.
+    //     A join must claim a fresh nonce on that invite and echo it onto the plot.
     //   - Collaborators: read + garden (beds/plants/photos). No bed/plot
     //     delete, no sharing management. Care logs/expenses stay per-user.
     //
@@ -251,19 +253,48 @@ service cloud.firestore {
         && request.resource.data.get('activeInviteCode', null) == resource.data.get('activeInviteCode', null);
     }
 
-    /** Joining via invite code: the only allowed change is adding yourself. */
-    function isSelfJoin() {
-      let oldUids = resource.data.get('collaboratorUids', []).toSet();
-      let newUids = request.resource.data.get('collaboratorUids', []).toSet();
+    /**
+     * Joining via invite code: the only membership change is adding yourself,
+     * and the write must carry a nonce just claimed on the current invite.
+     * Knowing the plot id is not enough — plot_invites is not listable, and a
+     * stale joinNonce left on the plot cannot be reused after removal.
+     * Must not throw when no invite is active, so leave/owner updates that
+     * fall through to this branch still evaluate to false.
+     */
+    function isSelfJoin(plotId) {
+      let code = resource.data.get('activeInviteCode', '');
+      let codeOk = code is string && code.matches('^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$');
+      let invitePath = /databases/$(database)/documents/plot_invites/$(codeOk ? code : 'x');
+      let nonce = request.resource.data.get('joinNonce', '');
+      let oldUids = resource.data.get('collaboratorUids', []) is list
+        ? resource.data.get('collaboratorUids', []).toSet()
+        : [].toSet();
+      let newUids = request.resource.data.get('collaboratorUids', []) is list
+        ? request.resource.data.get('collaboratorUids', []).toSet()
+        : [].toSet();
       let oldNames = resource.data.get('collaboratorNames', {});
       let newNames = request.resource.data.get('collaboratorNames', {});
       return isAuthenticated()
-        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collaboratorUids', 'collaboratorNames'])
+        && codeOk
+        && exists(invitePath)
+        && oldNames is map
+        && newNames is map
+        && get(invitePath).data.plotId == plotId
+        && get(invitePath).data.createdBy == resource.data.ownerUid
+        && get(invitePath).data.get('claimedBy', '') == request.auth.uid
+        && get(invitePath).data.get('claimNonce', '') == nonce
+        && nonce is string
+        && nonce.size() >= 16
+        && nonce.size() <= 64
+        && nonce != resource.data.get('joinNonce', '')
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['collaboratorUids', 'collaboratorNames', 'joinNonce'])
         && newUids == oldUids.union([request.auth.uid].toSet())
         && newNames.keys().toSet() == oldNames.keys().toSet().union([request.auth.uid].toSet())
+        && request.auth.uid in newNames
         && newNames[request.auth.uid] is string
         && newNames[request.auth.uid].size() > 0
-        && newNames[request.auth.uid].size() < 100;
+        && newNames[request.auth.uid].size() < 100
+        && (!('collaboratorNames' in resource.data) || newNames.diff(oldNames).affectedKeys().hasOnly([request.auth.uid]));
     }
 
     /** Leaving: the only allowed change is removing yourself. */
@@ -388,8 +419,11 @@ service cloud.firestore {
     }
 
     function isValidPlanter(data) {
+      // NOTE: ownerUid == request.auth.uid is NOT checked here — it is
+      // enforced explicitly on create, while updates allow collaborators
+      // and the plot owner to move beds they do not personally own.
       return hasRequiredFields(['ownerUid', 'name', 'gridPosition', 'size', 'createdAt']) &&
-        data.ownerUid == request.auth.uid &&
+        data.ownerUid is string &&
         data.name is string && data.name.size() > 0 && data.name.size() < 100 &&
         data.gridPosition is map && data.gridPosition.x is int && data.gridPosition.y is int &&
         data.size is map && data.size.w is int && data.size.h is int &&
@@ -630,21 +664,32 @@ service cloud.firestore {
         && isValidSpatialPlot(request.resource.data)
         && ((isDocOwner() && uidNotModified())
           || (isDocCollaborator() && uidNotModified() && plotSharingUnchanged())
-          || (isSelfJoin() && uidNotModified())
+          || (isSelfJoin(id) && uidNotModified())
           || (isSelfLeave() && uidNotModified())));
       allow delete: if isDocOwner() || isAdmin();
     }
 
-    // Invite codes for plot sharing. The code is the document id —
-    // unguessable, and anyone authenticated can redeem one they were given.
+    // Invite codes for plot sharing. The code is the document id.
+    // get (not list): anyone who was given the code can redeem it, but
+    // a signed-in user cannot enumerate every active invite.
+    // update: the redeemer may only stamp their own claim nonce.
     match /plot_invites/{code} {
-      allow read: if isAuthenticated();
+      allow get: if isAuthenticated();
       allow create: if isAuthenticated()
         && request.resource.data.plotId is string
         && plotDoc(request.resource.data.plotId).ownerUid == request.auth.uid
         && request.resource.data.createdBy == request.auth.uid
-        && request.resource.data.keys().hasOnly(['plotId', 'createdBy', 'createdAt']);
-      allow update: if false;
+        && request.resource.data.keys().hasOnly(['plotId', 'createdBy', 'createdAt'])
+        && request.resource.data.createdAt is timestamp;
+      allow update: if isAuthenticated()
+        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['claimedBy', 'claimNonce'])
+        && request.resource.data.plotId == resource.data.plotId
+        && request.resource.data.createdBy == resource.data.createdBy
+        && request.resource.data.claimedBy == request.auth.uid
+        && request.resource.data.claimNonce is string
+        && request.resource.data.claimNonce.size() >= 16
+        && request.resource.data.claimNonce.size() <= 64
+        && request.resource.data.claimNonce != resource.data.get('claimNonce', '');
       allow delete: if isAuthenticated()
         && plotDoc(resource.data.plotId).ownerUid == request.auth.uid;
     }
