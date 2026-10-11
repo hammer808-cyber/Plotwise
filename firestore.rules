@@ -233,8 +233,46 @@ service cloud.firestore {
     /** True when the caller's uid owns the plot or is a collaborator on it. */
     function isPlotMember(plotId) {
       return isAuthenticated() && plotId is string && plotId.size() > 0
+        && exists(/databases/$(database)/documents/spatial_plots/$(plotId))
         && (plotDoc(plotId).ownerUid == request.auth.uid
           || request.auth.uid in plotDoc(plotId).get('collaboratorUids', []));
+    }
+
+    /** Missing, null, and "" are not a plot. Inventory stores "" for Unassigned. */
+    function isAttachedPlot(plotId) {
+      return plotId is string && plotId.size() > 0;
+    }
+
+    /**
+     * Owning a plant or bed is not enough to keep gardening in a plot.
+     * After removal — or with only a plot id — a signed-in user must not
+     * push their documents into that plot or keep editing them there.
+     * They may still detach (clear plotId) so the record leaves the garden.
+     * Mirrors src/lib/plotAccess.ts — keep the two in sync.
+     */
+    function ownerPlotUpdateAllowed() {
+      let oldPlot = resource.data.get('plotId', null);
+      let newPlot = request.resource.data.get('plotId', null);
+      let oldAttached = isAttachedPlot(oldPlot);
+      let newAttached = isAttachedPlot(newPlot);
+      return isDocOwner() && (
+        (!oldAttached && (!newAttached || isPlotMember(newPlot)))
+        || (oldAttached && isPlotMember(oldPlot) && (!newAttached || isPlotMember(newPlot)))
+        || (oldAttached && !newAttached && !isPlotMember(oldPlot))
+      );
+    }
+
+    /**
+     * Delete your own placed document only while you still belong to its
+     * plot. A missing plot (already deleted) does not trap the document.
+     */
+    function ownerMayDeletePlacedDoc() {
+      let plotId = resource.data.get('plotId', null);
+      return isDocOwner() && (
+        !isAttachedPlot(plotId)
+        || isPlotMember(plotId)
+        || !exists(/databases/$(database)/documents/spatial_plots/$(plotId))
+      );
     }
 
     /** True when the caller is a collaborator on the plot being read/updated. */
@@ -594,7 +632,7 @@ service cloud.firestore {
       allow update: if isAdmin() || (isAuthenticated()
         && isValidInhabitant(request.resource.data)
         && uidNotModified()
-        && (isDocOwner()
+        && (ownerPlotUpdateAllowed()
           || (resource.data.get('plotId', null) is string
             && isPlotMember(resource.data.plotId)
             && request.resource.data.get('plotId', null) == resource.data.plotId)
@@ -611,14 +649,21 @@ service cloud.firestore {
         allow create: if isAuthenticated()
           && request.resource.data.ownerUid == request.auth.uid
           && (parentPlantPlot() == null || isPlotMember(parentPlantPlot()));
-        allow update: if isDocOwner() || isAdmin();
-        allow delete: if isDocOwner() || isAdmin();
+        // A removed collaborator must not keep writing photos onto a plant
+        // that is still sitting in the shared plot.
+        allow update: if isAdmin() || (isDocOwner() && parentPlotStillAllowsOwner());
+        allow delete: if isAdmin() || (isDocOwner() && parentPlotStillAllowsOwner());
       }
     }
 
     // Plot of the parent plant for the photos subcollection above.
     function parentPlantPlot() {
       return get(/databases/$(database)/documents/inhabitants/$(id)).data.get('plotId', null);
+    }
+
+    function parentPlotStillAllowsOwner() {
+      let plotId = parentPlantPlot();
+      return !isAttachedPlot(plotId) || isPlotMember(plotId);
     }
 
     match /spatial_plots/{id} {
@@ -700,14 +745,16 @@ service cloud.firestore {
       allow update: if isAdmin() || (isAuthenticated()
         && isValidPlanter(request.resource.data)
         && uidNotModified()
-        && (isDocOwner()
+        && (ownerPlotUpdateAllowed()
           || (resource.data.get('plotId', null) is string
             && isPlotMember(resource.data.plotId)
             && request.resource.data.get('plotId', null) == resource.data.plotId)
           || (resource.data.get('plotId', null) is string
             && plotDoc(resource.data.plotId).ownerUid == request.auth.uid)));
-      // Beds: you can delete your own; the plot owner can delete any bed in their plot.
-      allow delete: if isDocOwner() || isAdmin() || (isAuthenticated()
+      // Beds: you can delete your own while you still belong to its plot
+      // (or it isn't in one). The plot owner can delete any bed in their plot.
+      // A removed collaborator cannot delete beds out of a garden they left.
+      allow delete: if ownerMayDeletePlacedDoc() || isAdmin() || (isAuthenticated()
         && resource.data.get('plotId', null) is string
         && plotDoc(resource.data.plotId).ownerUid == request.auth.uid);
     }
