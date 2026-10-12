@@ -7,6 +7,7 @@ import { averageVigor } from '../lib/vigor';
 import { useActivePlot } from '../contexts/ActivePlotContext';
 import { ArrowLeft, Leaf, Ruler, Activity, Plus, Stethoscope, Pencil, Copy, Fence, X } from 'lucide-react';
 import { findFreeSpot } from '../lib/bedPlacement';
+import { bedAddPlantsPath, rowsForBedPage } from '../lib/bedLinks';
 import { toast } from 'sonner';
 import { duplicateBed } from '../lib/duplicateBed';
 import { handleFirestoreError, OperationType } from '../firebase';
@@ -114,7 +115,7 @@ export default function BedDetail() {
   };
 
   const handleDuplicateBed = async () => {
-    if (!user || !bed || !plotId || duplicating) return;
+    if (!user || !bed || duplicating) return;
     setDuplicating(true);
     try {
       const result = await duplicateBed({
@@ -196,11 +197,21 @@ export default function BedDetail() {
         setLoading(false);
       }
     );
+    // Plot members may list by plotId. A standalone bed has no plot, and a
+    // planterId-only list is denied (rules can't prove ownership), so load
+    // the owner's plants and keep the ones assigned to this bed.
     const q = plotId
       ? query(collection(db, 'inhabitants'), where('plotId', '==', plotId))
-      : query(collection(db, 'inhabitants'), where('planterId', '==', bedId));
+      : query(collection(db, 'inhabitants'), where('ownerUid', '==', user.uid));
     const unsubPlants = onSnapshot(q, (snap) => {
-      setPlants(snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Inhabitant));
+      const rows = snap.docs.map((d) => ({ id: d.id, ...d.data() }) as Inhabitant);
+      setPlants(rowsForBedPage(rows, bedId, !!plotId));
+    }, (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, 'inhabitants');
+      } catch {
+        // handleFirestoreError logs and rethrows
+      }
     });
     return () => {
       unsubPlot();
@@ -364,10 +375,14 @@ export default function BedDetail() {
         <div className="flex items-center justify-between mb-3 px-1">
           <h2 className="text-xs font-black uppercase tracking-[0.2em] text-on-surface-variant">Plants in this bed</h2>
           <button
-            onClick={() => navigate(`/plots/${plotId}`)}
+            onClick={() => {
+              const path = bedAddPlantsPath(plotId);
+              if (path) navigate(path);
+              else openAddToPlot();
+            }}
             className="flex items-center gap-1 text-xs font-bold text-primary hover:underline"
           >
-            <Plus size={14} /> Add plants
+            <Plus size={14} /> {plotId ? 'Add plants' : 'Add to a plot'}
           </button>
         </div>
         {bedPlants.length === 0 ? (
