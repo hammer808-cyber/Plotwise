@@ -7,6 +7,7 @@ import { useFirebase } from '../contexts/FirebaseContext';
 import { useActivePlot } from '../contexts/ActivePlotContext';
 import { db, collection, query, where, onSnapshot, handleFirestoreError, OperationType, addDoc, serverTimestamp, deleteDoc, doc, deleteField, batchDelete } from '../firebase';
 import { getPlantInfo, PLANT_DATABASE } from '../constants/plants';
+import { normalizeInhabitantType } from '../lib/inhabitantType';
 import { PLANT_PLACEHOLDER } from '../lib/plantImage';
 import { Inhabitant, SpatialPlot, EventLog } from '../types';
 import { calculateVigorIndex } from '../lib/botany';
@@ -69,7 +70,7 @@ export default function Inventory() {
         setNewPlantData({
           name: initialPlant.name || '',
           scientific: initialPlant.scientific || '',
-          type: initialPlant.type || 'Herb',
+          type: normalizeInhabitantType(initialPlant.type),
           waterFreq: initialPlant.water || 'Regular',
           sunExposure: initialPlant.sun || 'Full Sun',
           notes: initialPlant.description || '',
@@ -216,7 +217,7 @@ export default function Inventory() {
         ownerUid: user.uid,
         name: newPlantData.name,
         scientific: newPlantData.scientific || '',
-        type: newPlantData.type,
+        type: normalizeInhabitantType(newPlantData.type),
         waterFreq: newPlantData.waterFreq,
         sunExposure: newPlantData.sunExposure,
         notes: newPlantData.notes || '',
@@ -958,7 +959,7 @@ export default function Inventory() {
                                     ...newPlantData,
                                     name: m.name,
                                     scientific: m.scientific,
-                                    type: m.type,
+                                    type: normalizeInhabitantType(m.type),
                                     waterFreq: m.water,
                                     sunExposure: m.sun,
                                     notes: m.description || newPlantData.notes
