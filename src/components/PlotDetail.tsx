@@ -70,6 +70,7 @@ import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import BedEditModal from './BedEditModal';
 import { isPlanted, countPlanted, countWaiting } from '../lib/plotStats';
 import { duplicateBed } from '../lib/duplicateBed';
+import { releasePlantPatch } from '../lib/plotDelete';
 import SharePlotModal from './SharePlotModal';
 import { recalculateVigor, refreshStaleVigor, averageVigor } from '../lib/vigor';
 import WeedWarriorWizard from './WeedWarriorWizard';
@@ -811,27 +812,20 @@ export default function PlotDetail() {
 
   const handleDeletePlot = async () => {
     if (!plotId || !itemToDelete || itemToDelete.type !== 'plot' || !user) return;
-    const uid = user.uid;
     setIsDeletingConfirmed(true);
     
     try {
-      // 1. Get planters
-      const plantersQ = query(collection(db, 'planters'), where('plotId', '==', plotId), where('ownerUid', '==', uid));
+      // 1. Every bed in the plot, including collaborators'. An ownerUid
+      // filter left their beds pointed at a plot that was about to be deleted.
+      const plantersQ = query(collection(db, 'planters'), where('plotId', '==', plotId));
       const plantersSnap = await getDocs(plantersQ);
       const planterIds = plantersSnap.docs.map(d => d.id);
 
-      // 2. Unassign inhabitants
-      const inhabitantsQ = query(collection(db, 'inhabitants'), where('plotId', '==', plotId), where('ownerUid', '==', uid));
+      // 2. Release every plant in the plot back to its owner's rail.
+      const inhabitantsQ = query(collection(db, 'inhabitants'), where('plotId', '==', plotId));
       const inhabitantsSnap = await getDocs(inhabitantsQ);
       for (const d of inhabitantsSnap.docs) {
-        const data = d.data();
-        await updateDoc(doc(db, 'inhabitants', d.id), {
-          plotId: deleteField(),
-          planterId: deleteField(),
-          gridPosition: { x: 0, y: 0 },
-          // Back to unassigned: Planted -> Pending
-          ...(data.status === 'Planted' ? { status: 'Pending' } : {})
-        });
+        await updateDoc(doc(db, 'inhabitants', d.id), releasePlantPatch(d.data().status));
       }
 
       // 3. Delete planters in batch
