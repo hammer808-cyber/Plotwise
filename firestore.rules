@@ -795,14 +795,12 @@ service cloud.firestore {
       allow delete: if isDocOwner() || isAdmin();
     }
 
-    match /tasks/{taskId} {
-       allow read, write: if request.auth != null
-       && request.auth.uid == resource.data.ownerUid;
-    }
-
+    // Top-level session logs. Updates must not retarget ownerUid: a second
+    // match that only checks the existing owner is OR'd with this one and
+    // would let the owner hand the document to another account.
     match /logs/{logId} {
-      allow read, write: if request.auth != null
-      && request.auth.uid == resource.data.ownerUid;
+      allow read, delete: if isDocOwner();
+      allow update: if isDocOwner() && uidNotModified();
     }
     
     // Default deny
