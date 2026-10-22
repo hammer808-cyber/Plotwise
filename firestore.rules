@@ -658,7 +658,13 @@ service cloud.firestore {
 
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create: if isOwner(userId) && isValidUser(request.resource.data);
+      // `role` is the admin grant checked by isAdmin(). isValidUser does not
+      // restrict extra fields, so without this a new account can create its
+      // own profile with role "admin" (before the app writes the doc) and
+      // then read or write every garden. The app's profile write omits role;
+      // an existing admin can grant it later via the update rule.
+      allow create: if isOwner(userId) && isValidUser(request.resource.data)
+        && !('role' in request.resource.data);
       allow update: if (isOwner(userId) && isValidUser(request.resource.data) && (!('role' in request.resource.data) || request.resource.data.role == resource.data.role)) || isAdmin();
     }
 
