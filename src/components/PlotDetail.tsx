@@ -69,6 +69,7 @@ import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import BedEditModal from './BedEditModal';
 import { isPlanted, countPlanted, countWaiting } from '../lib/plotStats';
+import { canDeleteBed, canDeletePlot } from '../lib/deleteGuards';
 import { duplicateBed } from '../lib/duplicateBed';
 import SharePlotModal from './SharePlotModal';
 import { recalculateVigor, refreshStaleVigor, averageVigor } from '../lib/vigor';
@@ -129,6 +130,7 @@ interface Planter {
   size: { w: number; h: number };
   color: string;
   plotId: string;
+  ownerUid?: string;
 }
 
 interface Plant {
@@ -697,8 +699,19 @@ export default function PlotDetail() {
   };
 
   const deletePlanter = async () => {
-    if (!itemToDelete || itemToDelete.type !== 'planter') return;
+    if (!itemToDelete || itemToDelete.type !== 'planter' || !user) return;
     const id = itemToDelete.id;
+    const planter = planters.find(p => p.id === id);
+    // Plant updates run before the bed delete. A collaborator is allowed to
+    // edit plants in the plot, but not to delete someone else's bed — so
+    // checking after the writes would already have pulled those plants to
+    // the origin. Rules reject the bed delete; stop before any write.
+    if (!canDeleteBed({ userId: user.uid, bedOwnerUid: planter?.ownerUid, plotOwnerUid: plot?.ownerUid })) {
+      toast.error('Only the bed owner or the plot owner can delete this bed.');
+      setShowDeleteModal(false);
+      setItemToDelete(null);
+      return;
+    }
     setIsDeletingConfirmed(true);
     try {
       const inhabitantsInPlanter = inhabitants.filter(p =>
@@ -812,6 +825,15 @@ export default function PlotDetail() {
   const handleDeletePlot = async () => {
     if (!plotId || !itemToDelete || itemToDelete.type !== 'plot' || !user) return;
     const uid = user.uid;
+    // Beds are removed before the plot document. A collaborator is allowed
+    // to delete their own beds, but not the plot — so this used to erase
+    // their beds and then fail on the plot delete.
+    if (!canDeletePlot({ userId: uid, plotOwnerUid: plot?.ownerUid })) {
+      toast.error('Only the plot owner can delete this plot.');
+      setShowDeleteModal(false);
+      setItemToDelete(null);
+      return;
+    }
     setIsDeletingConfirmed(true);
     
     try {
@@ -1172,7 +1194,7 @@ export default function PlotDetail() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-4 gap-3">
+                <div className={cn('grid gap-3', canDeleteBed({ userId: user?.uid, bedOwnerUid: planter.ownerUid, plotOwnerUid: plot?.ownerUid }) ? 'grid-cols-4' : 'grid-cols-3')}>
                   <button
                     onClick={() => rotatePlanter(planter.id)}
                     className="flex flex-col items-center gap-1 py-3 rounded-2xl bg-primary/10 text-primary font-black text-xs hover:bg-primary/20 transition-colors"
@@ -1194,13 +1216,15 @@ export default function PlotDetail() {
                     <Settings2 size={20} />
                     Edit
                   </button>
-                  <button
-                    onClick={() => { setSelectedPlanterId(null); setItemToDelete({ id: planter.id, type: 'planter' }); setShowDeleteModal(true); }}
-                    className="flex flex-col items-center gap-1 py-3 rounded-2xl bg-red-50 text-red-500 font-black text-xs hover:bg-red-100 transition-colors"
-                  >
-                    <Trash2 size={20} />
-                    Delete
-                  </button>
+                  {canDeleteBed({ userId: user?.uid, bedOwnerUid: planter.ownerUid, plotOwnerUid: plot?.ownerUid }) && (
+                    <button
+                      onClick={() => { setSelectedPlanterId(null); setItemToDelete({ id: planter.id, type: 'planter' }); setShowDeleteModal(true); }}
+                      className="flex flex-col items-center gap-1 py-3 rounded-2xl bg-red-50 text-red-500 font-black text-xs hover:bg-red-100 transition-colors"
+                    >
+                      <Trash2 size={20} />
+                      Delete
+                    </button>
+                  )}
                 </div>
               </motion.div>
             </motion.div>
@@ -2102,15 +2126,17 @@ export default function PlotDetail() {
                   />
                 )}
 
-                <div className="flex gap-3">
-                  <button 
-                    onClick={() => { setIsEditingPlot(false); setItemToDelete({ id: plotId, type: 'plot' }); setShowDeleteModal(true); }}
-                    className="p-5 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"
-                    title="Delete Plot"
-                  >
-                    <Trash2 size={24} />
-                  </button>
-                </div>
+                {canDeletePlot({ userId: user?.uid, plotOwnerUid: plot?.ownerUid }) && (
+                  <div className="flex gap-3">
+                    <button 
+                      onClick={() => { setIsEditingPlot(false); setItemToDelete({ id: plotId, type: 'plot' }); setShowDeleteModal(true); }}
+                      className="p-5 bg-red-50 text-red-500 rounded-2xl hover:bg-red-500 hover:text-white transition-all shadow-sm"
+                      title="Delete Plot"
+                    >
+                      <Trash2 size={24} />
+                    </button>
+                  </div>
+                )}
               </div>
             </motion.div>
           </div>
