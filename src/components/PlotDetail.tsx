@@ -70,6 +70,7 @@ import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import BedEditModal from './BedEditModal';
 import { isPlanted, countPlanted, countWaiting } from '../lib/plotStats';
 import { duplicateBed } from '../lib/duplicateBed';
+import { releasePlantUpdate } from '../lib/releasePlant';
 import SharePlotModal from './SharePlotModal';
 import { recalculateVigor, refreshStaleVigor, averageVigor } from '../lib/vigor';
 import WeedWarriorWizard from './WeedWarriorWizard';
@@ -707,12 +708,9 @@ export default function PlotDetail() {
           p.gridPosition.x >= planters.find(pl => pl.id === id)!.gridPosition.x && p.gridPosition.x < planters.find(pl => pl.id === id)!.gridPosition.x + planters.find(pl => pl.id === id)!.size.w && p.gridPosition.y >= planters.find(pl => pl.id === id)!.gridPosition.y && p.gridPosition.y < planters.find(pl => pl.id === id)!.gridPosition.y + planters.find(pl => pl.id === id)!.size.h)
       );
       for (const inhabitant of inhabitantsInPlanter) {
-        await updateDoc(doc(db, 'inhabitants', inhabitant.id), {
-          gridPosition: { x: 0, y: 0 },
-          planterId: deleteField(),
-          // Back to the rail: Planted -> Pending
-          ...(inhabitant.status === 'Planted' ? { status: 'Pending' as const } : {}),
-        });
+        // plotId must be null (not removed) so the rail query matches,
+        // and the plant leaves this plot instead of occupying cell (0, 0).
+        await updateDoc(doc(db, 'inhabitants', inhabitant.id), releasePlantUpdate(inhabitant.status));
       }
       await deleteDoc(doc(db, 'planters', id));
       setEditingPlanter(null);
