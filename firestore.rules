@@ -775,7 +775,9 @@ service cloud.firestore {
     }
 
     match /custom_taxonomy/{id} {
-      allow read: if isAuthenticated();
+      // Discoveries are private (they can carry a camera photo). Ownership is
+      // discoveredBy, not ownerUid — a list must filter on that field.
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.discoveredBy == request.auth.uid);
       allow create: if isAuthenticated() && isValidCustomTaxonomy(request.resource.data);
       allow update: if (isAuthenticated() && resource.data.discoveredBy == request.auth.uid && isValidCustomTaxonomy(request.resource.data)) || isAdmin();
       allow delete: if (isAuthenticated() && resource.data.discoveredBy == request.auth.uid) || isAdmin();

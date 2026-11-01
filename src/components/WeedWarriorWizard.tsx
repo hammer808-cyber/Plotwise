@@ -46,19 +46,23 @@ export default function WeedWarriorWizard({ isOpen, onClose, onSave, plotId, plo
   useEffect(() => {
     if (!user || !isOpen) return;
 
+    // Rules only allow reading your own discoveries, keyed by discoveredBy.
+    // Filter type locally so this stays a single-field query.
     const q = query(
       collection(db, 'custom_taxonomy'),
-      where('ownerUid', '==', user.uid),
-      where('type', '==', 'weed')
+      where('discoveredBy', '==', user.uid)
     );
 
     const unsubscribe = onSnapshot(q, (snapshot) => {
       const weeds: Record<string, any> = {};
       snapshot.docs.forEach(doc => {
         const data = doc.data();
+        if (data.type !== 'weed') return;
         weeds[data.name] = data;
       });
       setCustomWeeds(weeds);
+    }, () => {
+      setCustomWeeds({});
     });
 
     return () => unsubscribe();
