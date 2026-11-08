@@ -192,6 +192,25 @@ export function averageVigor(plants: Inhabitant[]): number | null {  const score
 }
 
 /**
+ * Score one plant. A missing `logs` or `treatments` argument keeps that
+ * factor from the saved breakdown. An empty array means the caller loaded
+ * that list and it was empty — it does not mean "unknown".
+ */
+export function assembleVigor(
+  plant: Inhabitant,
+  logs?: VigorEvent[],
+  treatments?: VigorTreatment[]
+): VigorBreakdown {
+  const prev = (plant as any).vigorBreakdown as VigorBreakdown | undefined;
+  const hydration = logs ? scoreHydration(plant, logs) : (prev?.hydration ?? scoreHydration(plant, []));
+  const condition = scoreCondition(plant);
+  const pests = treatments ? scorePests(plant, treatments) : (prev?.pests ?? scorePests(plant, []));
+  const care = logs ? scoreCare(plant, logs) : (prev?.care ?? scoreCare(plant, []));
+  const total = Math.max(0, Math.min(100, Math.round(hydration * 0.3 + condition * 0.3 + pests * 0.25 + care * 0.15)));
+  return { hydration, condition, pests, care, total };
+}
+
+/**
  * Recompute one plant's vigor from live events and persist it.
  * Pass only the inputs you have: `logs` and `treatments` are each optional,
  * and any factor whose input is missing is preserved from the previously
@@ -208,12 +227,8 @@ export async function recalculateVigor(
 ): Promise<VigorBreakdown | null> {
   if (!plant.id) return null;
   const prev = (plant as any).vigorBreakdown as VigorBreakdown | undefined;
-  const hydration = logs ? scoreHydration(plant, logs) : (prev?.hydration ?? scoreHydration(plant, []));
-  const condition = scoreCondition(plant);
-  const pests = treatments ? scorePests(plant, treatments) : (prev?.pests ?? scorePests(plant, []));
-  const care = logs ? scoreCare(plant, logs) : (prev?.care ?? scoreCare(plant, []));
-  const total = Math.max(0, Math.min(100, Math.round(hydration * 0.3 + condition * 0.3 + pests * 0.25 + care * 0.15)));
-  const breakdown: VigorBreakdown = { hydration, condition, pests, care, total };
+  const breakdown = assembleVigor(plant, logs, treatments);
+  const total = breakdown.total;
   const prevTotal = typeof plant.vigorIndex === 'number' ? plant.vigorIndex : null;
   if (prev && prevTotal === total) return breakdown;
   if (prev && prevTotal !== null && Math.abs(prevTotal - total) < 1) return breakdown;
@@ -235,11 +250,14 @@ const STALE_HOURS = 24;
 /**
  * Background refresh: recompute vigor for plants whose saved score is missing
  * or older than STALE_HOURS. Fire-and-forget; never blocks rendering.
+ *
+ * Omit `treatments` (and `logs`) when that list was not loaded. Defaulting
+ * them to [] used to mean "no pests" and erased active disease pressure.
  */
 export async function refreshStaleVigor(
   plants: Inhabitant[],
-  logs: VigorEvent[] = [],
-  treatments: VigorTreatment[] = []
+  logs?: VigorEvent[],
+  treatments?: VigorTreatment[]
 ): Promise<void> {
   const cutoff = Date.now() - STALE_HOURS * 3_600_000;
   const stale = plants.filter((p) => {
