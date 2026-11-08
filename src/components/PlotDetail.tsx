@@ -201,6 +201,7 @@ export default function PlotDetail() {
   const [inhabitants, setInhabitants] = useState<Inhabitant[]>([]);
   const [availableInhabitants, setAvailableInhabitants] = useState<Inhabitant[]>([]);
   const [eventLogs, setEventLogs] = useState<EventLog[]>([]);
+  const [careLogsReady, setCareLogsReady] = useState(false);
   const [loading, setLoading] = useState(true);
   
   const [activeId, setActiveId] = useState<string | null>(null);
@@ -284,7 +285,11 @@ export default function PlotDetail() {
   );
 
   useEffect(() => {
-    if (!user || !plotId) return;
+    if (!user || !plotId) {
+      setCareLogsReady(false);
+      return;
+    }
+    setCareLogsReady(false);
 
     // Fetch Plot Details
     const unsubscribePlot = onSnapshot(doc(db, 'spatial_plots', plotId), (docSnap) => {
@@ -337,10 +342,12 @@ export default function PlotDetail() {
       handleFirestoreError(error, OperationType.LIST, 'tasks');
     });
 
-    // Fetch event logs for conflict checking
+    // Fetch event logs for conflict checking. The vigor refresh waits for this
+    // snapshot so it doesn't score care from the empty initial state.
     const logsQ = query(collection(db, 'event_logs'), where('ownerUid', '==', user.uid));
     const unsubscribeLogs = onSnapshot(logsQ, (snapshot) => {
       setEventLogs(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as EventLog)));
+      setCareLogsReady(true);
     });
 
     return () => {
@@ -354,16 +361,23 @@ export default function PlotDetail() {
   }, [user, plotId, navigate]);
 
   // Background vigor refresh: recompute stale/never-calculated scores once data lands.
-  // Logs are filtered per-plant inside the engine, so the all-plots query can't leak.
+  // Only the signed-in user's plants — a collaborator's own care logs are not
+  // the other gardener's history, and writing them back overwrites that score.
+  // The ref is set when the refresh fires, not when it is scheduled, so a later
+  // log snapshot can still replace an empty first pass.
   const vigorRefreshed = useRef<string | null>(null);
   useEffect(() => {
-    if (!plotId || inhabitants.length === 0 || vigorRefreshed.current === plotId) return;
-    vigorRefreshed.current = plotId;
+    if (!user || !plotId || !careLogsReady || inhabitants.length === 0) return;
+    if (vigorRefreshed.current === plotId) return;
+    const mine = inhabitants.filter((p) => p.ownerUid === user.uid);
+    const logs = eventLogs;
     const t = setTimeout(() => {
-      refreshStaleVigor(inhabitants, eventLogs as any).catch(() => {});
+      if (vigorRefreshed.current === plotId) return;
+      vigorRefreshed.current = plotId;
+      refreshStaleVigor(mine, logs as any).catch(() => {});
     }, 1500);
     return () => clearTimeout(t);
-  }, [plotId, inhabitants, eventLogs]);
+  }, [user, plotId, inhabitants, eventLogs, careLogsReady]);
 
   const handleDragStart = (event: DragStartEvent) => {
     const { active } = event;
