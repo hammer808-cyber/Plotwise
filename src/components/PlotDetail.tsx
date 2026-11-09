@@ -69,6 +69,7 @@ import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import PlotEditForm, { PlotEditData } from './PlotEditForm';
 import BedEditModal from './BedEditModal';
 import { isPlanted, countPlanted, countWaiting } from '../lib/plotStats';
+import { createAsyncGate } from '../lib/asyncGate';
 import { duplicateBed } from '../lib/duplicateBed';
 import SharePlotModal from './SharePlotModal';
 import { recalculateVigor, refreshStaleVigor, averageVigor } from '../lib/vigor';
@@ -219,6 +220,11 @@ export default function PlotDetail() {
   // cells so the whole plot outline fits the available width. Zoom scales up.
   const gridWrapRef = useRef<HTMLDivElement>(null);
   const gridInnerRef = useRef<HTMLDivElement>(null);
+  // Bed moves and rotates both rewrite every plant in the bed from the
+  // position they captured when the gesture started. A second tap (right
+  // then down on the nudge pad, or two plot taps) must not run until the
+  // first write finishes, or the plant delta and the bed delta diverge.
+  const geometryGate = useRef(createAsyncGate()).current;
   const [wrapWidth, setWrapWidth] = useState(0);
   useEffect(() => {
     const el = gridWrapRef.current;
@@ -525,43 +531,46 @@ export default function PlotDetail() {
 
   /** Shared bed-move write: used by drag-drop AND tap-to-move. Plants riding the bed move with it. */
   const commitBedMove = async (planter: Planter, rawX: number, rawY: number) => {
-    // Beds stay inside the plot outline
-    const newX = Math.max(0, Math.min(COLS - planter.size.w, rawX));
-    const newY = Math.max(0, Math.min(ROWS - planter.size.h, rawY));
-    if (newX === planter.gridPosition.x && newY === planter.gridPosition.y) return false;
+    const outcome = await geometryGate.run(async () => {
+      // Beds stay inside the plot outline
+      const newX = Math.max(0, Math.min(COLS - planter.size.w, rawX));
+      const newY = Math.max(0, Math.min(ROWS - planter.size.h, rawY));
+      if (newX === planter.gridPosition.x && newY === planter.gridPosition.y) return false;
 
-    try {
-      await updateDoc(doc(db, 'planters', planter.id), {
-        gridPosition: { x: newX, y: newY }
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `planters/${planter.id}`);
-      return false;
-    }
+      try {
+        await updateDoc(doc(db, 'planters', planter.id), {
+          gridPosition: { x: newX, y: newY }
+        });
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `planters/${planter.id}`);
+        return false;
+      }
 
-    const dx = newX - planter.gridPosition.x;
-    const dy = newY - planter.gridPosition.y;
-    if (dx !== 0 || dy !== 0) {
-      const riders = inhabitants.filter(p =>
-        p.planterId === planter.id ||
-        (!p.planterId && p.gridPosition &&
-          p.gridPosition.x >= planter.gridPosition.x && p.gridPosition.x < planter.gridPosition.x + planter.size.w &&
-          p.gridPosition.y >= planter.gridPosition.y && p.gridPosition.y < planter.gridPosition.y + planter.size.h)
-      );
-      for (const r of riders) {
-        const rx = Math.max(0, Math.min(COLS - 1, (r.gridPosition?.x || 0) + dx));
-        const ry = Math.max(0, Math.min(ROWS - 1, (r.gridPosition?.y || 0) + dy));
-        try {
-          await updateDoc(doc(db, 'inhabitants', r.id), {
-            gridPosition: { x: rx, y: ry },
-            planterId: planter.id,
-          });
-        } catch (error) {
-          handleFirestoreError(error, OperationType.UPDATE, `inhabitants/${r.id}`);
+      const dx = newX - planter.gridPosition.x;
+      const dy = newY - planter.gridPosition.y;
+      if (dx !== 0 || dy !== 0) {
+        const riders = inhabitants.filter(p =>
+          p.planterId === planter.id ||
+          (!p.planterId && p.gridPosition &&
+            p.gridPosition.x >= planter.gridPosition.x && p.gridPosition.x < planter.gridPosition.x + planter.size.w &&
+            p.gridPosition.y >= planter.gridPosition.y && p.gridPosition.y < planter.gridPosition.y + planter.size.h)
+        );
+        for (const r of riders) {
+          const rx = Math.max(0, Math.min(COLS - 1, (r.gridPosition?.x || 0) + dx));
+          const ry = Math.max(0, Math.min(ROWS - 1, (r.gridPosition?.y || 0) + dy));
+          try {
+            await updateDoc(doc(db, 'inhabitants', r.id), {
+              gridPosition: { x: rx, y: ry },
+              planterId: planter.id,
+            });
+          } catch (error) {
+            handleFirestoreError(error, OperationType.UPDATE, `inhabitants/${r.id}`);
+          }
         }
       }
-    }
-    return true;
+      return true;
+    });
+    return outcome === true;
   };
 
   // One-time repair: the first tap-to-place build (Sep 24) wrote bed-local
@@ -729,38 +738,40 @@ export default function PlotDetail() {
   const rotatePlanter = async (id: string) => {
     const planter = planters.find(p => p.id === id);
     if (!planter) return;
-    // 90-degree rotation: swap width and height, then pull back inside the plot
-    const newSize = { w: planter.size.h, h: planter.size.w };
-    const newX = Math.max(0, Math.min(COLS - newSize.w, planter.gridPosition.x));
-    const newY = Math.max(0, Math.min(ROWS - newSize.h, planter.gridPosition.y));
-    try {
-      await updateDoc(doc(db, 'planters', id), {
-        size: newSize,
-        gridPosition: { x: newX, y: newY }
-      });
-      // Plants riding in the bed keep riding: shift them by the same delta the
-      // bed moved, clamped inside the bed's new footprint so the arrangement
-      // survives the rotation instead of stacking at the origin.
-      const dx = newX - planter.gridPosition.x;
-      const dy = newY - planter.gridPosition.y;
-      const riders = inhabitants.filter(p =>
-        p.planterId === id ||
-        (!p.planterId && p.gridPosition &&
-          p.gridPosition.x >= planter.gridPosition.x && p.gridPosition.x < planter.gridPosition.x + planter.size.w &&
-          p.gridPosition.y >= planter.gridPosition.y && p.gridPosition.y < planter.gridPosition.y + planter.size.h)
-      );
-      for (const r of riders) {
-        const rx = Math.max(newX, Math.min(newX + newSize.w - 1, (r.gridPosition?.x || 0) + dx));
-        const ry = Math.max(newY, Math.min(newY + newSize.h - 1, (r.gridPosition?.y || 0) + dy));
-        await updateDoc(doc(db, 'inhabitants', r.id), {
-          gridPosition: { x: rx, y: ry },
-          planterId: id,
+    await geometryGate.run(async () => {
+      // 90-degree rotation: swap width and height, then pull back inside the plot
+      const newSize = { w: planter.size.h, h: planter.size.w };
+      const newX = Math.max(0, Math.min(COLS - newSize.w, planter.gridPosition.x));
+      const newY = Math.max(0, Math.min(ROWS - newSize.h, planter.gridPosition.y));
+      try {
+        await updateDoc(doc(db, 'planters', id), {
+          size: newSize,
+          gridPosition: { x: newX, y: newY }
         });
+        // Plants riding in the bed keep riding: shift them by the same delta the
+        // bed moved, clamped inside the bed's new footprint so the arrangement
+        // survives the rotation instead of stacking at the origin.
+        const dx = newX - planter.gridPosition.x;
+        const dy = newY - planter.gridPosition.y;
+        const riders = inhabitants.filter(p =>
+          p.planterId === id ||
+          (!p.planterId && p.gridPosition &&
+            p.gridPosition.x >= planter.gridPosition.x && p.gridPosition.x < planter.gridPosition.x + planter.size.w &&
+            p.gridPosition.y >= planter.gridPosition.y && p.gridPosition.y < planter.gridPosition.y + planter.size.h)
+        );
+        for (const r of riders) {
+          const rx = Math.max(newX, Math.min(newX + newSize.w - 1, (r.gridPosition?.x || 0) + dx));
+          const ry = Math.max(newY, Math.min(newY + newSize.h - 1, (r.gridPosition?.y || 0) + dy));
+          await updateDoc(doc(db, 'inhabitants', r.id), {
+            gridPosition: { x: rx, y: ry },
+            planterId: id,
+          });
+        }
+        toast.success('Bed rotated');
+      } catch (error) {
+        handleFirestoreError(error, OperationType.UPDATE, `planters/${id}`);
       }
-      toast.success('Bed rotated');
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, `planters/${id}`);
-    }
+    });
   };
 
   const handleDuplicateBed = async (planter: Planter) => {
@@ -1457,7 +1468,8 @@ export default function PlotDetail() {
                   toast.warning('That spot overlaps another bed — pick a clear area.');
                   return;
                 }
-                commitBedMove(movingBed, nx, ny).then(() => {
+                commitBedMove(movingBed, nx, ny).then((moved) => {
+                  if (!moved) return;
                   toast.success(`${movingBed.name} moved`);
                   setMovingBed(null);
                 });
