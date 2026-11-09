@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Check } from 'lucide-react';
 import type { SpatialPlot } from '../types';
+import { PLOT_HEALTH, PLOT_STATUSES, coercePlotHealth, coercePlotStatus } from '../lib/firestoreEnums';
 
 /**
  * The one and only plot edit form. Used everywhere a plot can be edited
@@ -19,8 +20,8 @@ export interface PlotEditData {
 
 export const SUN_OPTIONS = ['Full Sun', 'Partial Shade', 'Full Shade'];
 export const SOIL_OPTIONS = ['Loam', 'Clay', 'Sandy', 'Raised Bed Mix'];
-const STATUS_OPTIONS = ['Active', 'Inactive'];
-const HEALTH_OPTIONS = ['Excellent', 'Stable', 'Thriving', 'Stressed', 'Dormant', 'Critical'];
+const STATUS_OPTIONS = [...PLOT_STATUSES];
+const HEALTH_OPTIONS = [...PLOT_HEALTH];
 
 interface PlotEditFormProps {
   initial: SpatialPlot;
@@ -67,7 +68,14 @@ export default function PlotEditForm({ initial, isSaving, onSave, onCancel }: Pl
 
   return (
     <form
-      onSubmit={(e) => { e.preventDefault(); onSave(form); }}
+      onSubmit={(e) => {
+        e.preventDefault();
+        onSave({
+          ...form,
+          status: coercePlotStatus(form.status),
+          healthStatus: coercePlotHealth(form.healthStatus),
+        });
+      }}
       className="space-y-6"
     >
       <div className="space-y-2">

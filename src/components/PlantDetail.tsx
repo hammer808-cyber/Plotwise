@@ -18,6 +18,7 @@ import HealthCheckWizard from './HealthCheckWizard';
 import { getPlantInfo } from '../constants/plants';
 import PlantPhotoLog from './PlantPhotoLog';
 import { PLANT_PLACEHOLDER } from '../lib/plantImage';
+import { INHABITANT_STATUSES, coerceInhabitantStatus } from '../lib/firestoreEnums';
 
 export default function PlantDetail() {
   const { user } = useFirebase();
@@ -181,13 +182,15 @@ export default function PlantDetail() {
     try {
       const plantRef = doc(db, 'inhabitants', id);
       const { vigorIndex: _dropped, ...safeForm } = editForm as any;
+      const status = coerceInhabitantStatus(safeForm.status);
       await updateDoc(plantRef, {
         ...safeForm,
+        status,
         updatedAt: serverTimestamp()
       });
       // Status/notes changed -> recompute the condition factor (other factors preserved)
       if (plant) {
-        recalculateVigor({ ...plant, ...safeForm } as any).catch(() => {});
+        recalculateVigor({ ...plant, ...safeForm, status } as any).catch(() => {});
       }
       setIsEditing(false);
       toast.success('Botanical record updated!');
@@ -674,14 +677,13 @@ export default function PlantDetail() {
                     <div className="space-y-2">
                       <label className="text-[10px] font-black uppercase tracking-widest text-on-surface-variant ml-1">Status</label>
                       <select 
-                        value={editForm.status}
+                        value={coerceInhabitantStatus(editForm.status)}
                         onChange={(e) => setEditForm({...editForm, status: e.target.value})}
                         className="w-full bg-stone-100 border-none rounded-2xl px-6 py-4 font-bold focus:ring-2 ring-primary/20"
                       >
-                        <option value="Healthy">Healthy</option>
-                        <option value="Struggling">Struggling</option>
-                        <option value="Dormant">Dormant</option>
-                        <option value="Harvested">Harvested</option>
+                        {INHABITANT_STATUSES.map((status) => (
+                          <option key={status} value={status}>{status}</option>
+                        ))}
                       </select>
                     </div>
                     <div className="space-y-2">
