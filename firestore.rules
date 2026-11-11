@@ -604,21 +604,37 @@ service cloud.firestore {
         && resource.data.get('plotId', null) is string
         && plotDoc(resource.data.plotId).ownerUid == request.auth.uid);
 
-      // Per-plant photo timeline (visual growth log)
+      // Per-plant photo timeline (visual growth log).
+      // `id` is this match's wildcard. Functions defined outside the match
+      // cannot see it, so every helper takes the plant id as an argument.
       match /photos/{photoId} {
         allow read: if isDocOwner() || isAdmin() || (isAuthenticated()
-          && parentPlantPlot() is string && isPlotMember(parentPlantPlot()));
+          && parentPlantPlot(id) is string && isPlotMember(parentPlantPlot(id)));
+        // The plant's owner can always add a photo. A plot member can add one
+        // only when the plant is actually in that shared plot. A missing
+        // plotId must not open the subcollection to every signed-in account.
         allow create: if isAuthenticated()
           && request.resource.data.ownerUid == request.auth.uid
-          && (parentPlantPlot() == null || isPlotMember(parentPlantPlot()));
+          && (parentPlantOwner(id) == request.auth.uid
+            || (parentPlantPlot(id) is string && isPlotMember(parentPlantPlot(id))));
         allow update: if isDocOwner() || isAdmin();
         allow delete: if isDocOwner() || isAdmin();
       }
     }
 
-    // Plot of the parent plant for the photos subcollection above.
-    function parentPlantPlot() {
-      return get(/databases/$(database)/documents/inhabitants/$(id)).data.get('plotId', null);
+    // Parent inhabitant for the photos subcollection above.
+    // The plant id is a parameter: this function sits outside
+    // match /inhabitants/{id}, where that wildcard is not in scope.
+    function parentPlant(plantId) {
+      return get(/databases/$(database)/documents/inhabitants/$(plantId)).data;
+    }
+
+    function parentPlantPlot(plantId) {
+      return parentPlant(plantId).get('plotId', null);
+    }
+
+    function parentPlantOwner(plantId) {
+      return parentPlant(plantId).get('ownerUid', '');
     }
 
     match /spatial_plots/{id} {
