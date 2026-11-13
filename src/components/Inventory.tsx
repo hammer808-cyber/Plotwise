@@ -7,6 +7,7 @@ import { useFirebase } from '../contexts/FirebaseContext';
 import { useActivePlot } from '../contexts/ActivePlotContext';
 import { db, collection, query, where, onSnapshot, handleFirestoreError, OperationType, addDoc, serverTimestamp, deleteDoc, doc, deleteField, batchDelete } from '../firebase';
 import { getPlantInfo, PLANT_DATABASE } from '../constants/plants';
+import { cellInBed, firstFreeBedCell } from '../lib/bedPlacement';
 import { PLANT_PLACEHOLDER } from '../lib/plantImage';
 import { Inhabitant, SpatialPlot, EventLog } from '../types';
 import { calculateVigorIndex } from '../lib/botany';
@@ -153,6 +154,21 @@ export default function Inventory() {
     if (!editingPlant) return;
     setIsSaving(true);
     try {
+      const bed = planters.find((p) => p.id && p.id === editingPlant.planterId);
+      // Assigning a bed only stored planterId. The old cell stayed put, so the
+      // plant left the rail without landing in the bed, and the next bed move
+      // added that bed's delta to the stale coordinate.
+      const gridPatch =
+        bed?.gridPosition && bed?.size && !cellInBed(editingPlant.gridPosition, bed)
+          ? {
+              gridPosition: firstFreeBedCell(
+                bed,
+                inhabitants
+                  .filter((p) => p.id !== editingPlant.id && p.gridPosition && cellInBed(p.gridPosition, bed))
+                  .map((p) => ({ x: p.gridPosition!.x, y: p.gridPosition!.y }))
+              ),
+            }
+          : {};
       await updateDoc(doc(db, 'inhabitants', editingPlant.id), {
         name: editingPlant.name,
         scientific: editingPlant.scientific || '',
@@ -162,6 +178,7 @@ export default function Inventory() {
         notes: editingPlant.notes || '',
         plotId: editingPlant.plotId,
         planterId: editingPlant.planterId,
+        ...gridPatch,
         updatedAt: serverTimestamp()
       });
       
