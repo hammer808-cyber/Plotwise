@@ -279,6 +279,22 @@ service cloud.firestore {
         && newNames.keys().toSet() == oldNames.keys().toSet().difference([request.auth.uid].toSet());
     }
 
+    /**
+     * Plot owner may edit a plant or bed that is already in their plot, and
+     * may clear plotId when releasing it (plot delete). They may not point
+     * it at a different plot: that publishes the other gardener's record,
+     * including its photo log, into a garden that person never joined.
+     * Missing or null plotId is a release. "" is not — inventory uses it
+     * for Unassigned and the rail query only matches null.
+     */
+    function plotOwnerKeepsOrReleases() {
+      let nextPlot = request.resource.data.get('plotId', null);
+      return resource.data.get('plotId', null) is string
+        && resource.data.plotId.size() > 0
+        && plotDoc(resource.data.plotId).ownerUid == request.auth.uid
+        && (nextPlot == resource.data.plotId || nextPlot == null);
+    }
+
     function hasRequiredFields(fields) {
       return request.resource.data.keys().hasAll(fields);
     }
@@ -598,8 +614,7 @@ service cloud.firestore {
           || (resource.data.get('plotId', null) is string
             && isPlotMember(resource.data.plotId)
             && request.resource.data.get('plotId', null) == resource.data.plotId)
-          || (resource.data.get('plotId', null) is string
-            && plotDoc(resource.data.plotId).ownerUid == request.auth.uid)));
+          || plotOwnerKeepsOrReleases()));
       allow delete: if isDocOwner() || isAdmin() || (isAuthenticated()
         && resource.data.get('plotId', null) is string
         && plotDoc(resource.data.plotId).ownerUid == request.auth.uid);
@@ -704,8 +719,7 @@ service cloud.firestore {
           || (resource.data.get('plotId', null) is string
             && isPlotMember(resource.data.plotId)
             && request.resource.data.get('plotId', null) == resource.data.plotId)
-          || (resource.data.get('plotId', null) is string
-            && plotDoc(resource.data.plotId).ownerUid == request.auth.uid)));
+          || plotOwnerKeepsOrReleases()));
       // Beds: you can delete your own; the plot owner can delete any bed in their plot.
       allow delete: if isDocOwner() || isAdmin() || (isAuthenticated()
         && resource.data.get('plotId', null) is string
