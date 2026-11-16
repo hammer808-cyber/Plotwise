@@ -5,8 +5,9 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { cn } from '@/src/lib/utils';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { useActivePlot } from '../contexts/ActivePlotContext';
-import { db, collection, query, where, onSnapshot, handleFirestoreError, OperationType, addDoc, serverTimestamp, deleteDoc, doc, deleteField, batchDelete } from '../firebase';
+import { db, collection, query, where, onSnapshot, handleFirestoreError, OperationType, addDoc, serverTimestamp, deleteDoc, doc, batchDelete } from '../firebase';
 import { getPlantInfo, PLANT_DATABASE } from '../constants/plants';
+import { unassignedPlantPlacement } from '../lib/inventoryPlant';
 import { PLANT_PLACEHOLDER } from '../lib/plantImage';
 import { Inhabitant, SpatialPlot, EventLog } from '../types';
 import { calculateVigorIndex } from '../lib/botany';
@@ -227,9 +228,7 @@ export default function Inventory() {
         lastWatered: serverTimestamp(),
         nextWatering: format(addDays(new Date(), 2), 'yyyy-MM-dd'),
         tempRange: '65-85°F',
-        gridPosition: { x: 0, y: 0 },
-        planterId: deleteField(),
-        plotId: deleteField(),
+        ...unassignedPlantPlacement(),
         createdAt: serverTimestamp()
       };
 
