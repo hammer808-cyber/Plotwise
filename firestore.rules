@@ -58,7 +58,7 @@ service cloud.firestore {
     //   - steps: list (optional) - Treatment steps
     //   - materials: list (optional) - Materials needed
     //   - symptoms: string (optional) - Symptoms
-    //   - status: string (optional) - Active/Completed
+    //   - status: string (optional) - Active/Completed/Resolved
     //   - ownerUid: string (required) - Owner's UID
     //   - createdAt: timestamp (required) - Creation date
     //
@@ -454,7 +454,7 @@ service cloud.firestore {
         data.disease is string && data.disease.size() > 0 && data.disease.size() < 200 &&
         data.treatment is string && data.treatment.size() > 0 && data.treatment.size() < 2000 &&
         data.createdAt is timestamp &&
-        (!('status' in data) || data.status in ['Active', 'Completed']) &&
+        (!('status' in data) || data.status in ['Active', 'Completed', 'Resolved']) &&
         (!('steps' in data) || data.steps is list) &&
         (!('materials' in data) || data.materials is list) &&
         (!('plantName' in data) || (data.plantName is string && data.plantName.size() < 100)) &&
