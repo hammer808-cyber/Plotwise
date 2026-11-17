@@ -12,6 +12,7 @@ import { useNavigate } from 'react-router-dom';
 import { Inhabitant, EventLog } from '../types';
 import { checkTreatmentConflict } from '../services/botanyService';
 import { logEvent } from '../services/eventService';
+import { recoveryCalendarDate, RESOLVED_TREATMENT_STATUS } from '../lib/treatmentRecovery';
 import { DeleteConfirmationModal } from './DeleteConfirmationModal';
 import TreatmentConflictModal from './TreatmentConflictModal';
 import DiagnosisPanel, { DiagnosisCandidate, DiagnosisResult } from './DiagnosisPanel';
@@ -262,7 +263,7 @@ export default function Treatment() {
       const activeLog = treatmentLogs.find(l => l.plantId === id && l.status === 'Active');
       if (activeLog) {
         await updateDoc(doc(db, 'treatments', activeLog.id), {
-          status: 'Resolved',
+          status: RESOLVED_TREATMENT_STATUS,
           successRate: parseInt(rate) || 100,
           resolvedAt: serverTimestamp()
         });
@@ -272,7 +273,7 @@ export default function Treatment() {
         status: 'Healthy',
         needsWater: false
       });
-      const resolvedTreatments = treatmentLogs.map(l => l.id === (activeLog && activeLog.id) ? { ...l, status: 'Resolved', successRate: parseInt(rate) || 100, resolvedAt: new Date() } : l);
+      const resolvedTreatments = treatmentLogs.map(l => l.id === (activeLog && activeLog.id) ? { ...l, status: RESOLVED_TREATMENT_STATUS, successRate: parseInt(rate) || 100, resolvedAt: new Date() } : l);
       const resolvedPlant = sickPlants.find(p => p.id === id) || visibleAllPlants.find(p => p.id === id);
       if (resolvedPlant) {
         recalculateVigor({ ...resolvedPlant, status: 'Healthy', needsWater: false } as any, undefined, resolvedTreatments as any).catch(() => {});
@@ -284,7 +285,7 @@ export default function Treatment() {
         ownerUid: user.uid,
         title: `Resolved: ${plant?.name || 'Plant'} recovered`,
         description: `Treatment successful (${rate}%). Plant status returned to Healthy.`,
-        date: new Date().toISOString(),
+        date: recoveryCalendarDate(),
         type: 'Treatment',
         priority: 'Medium',
         relatedId: id,
