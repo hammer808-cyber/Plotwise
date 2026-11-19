@@ -185,6 +185,27 @@ export function calculateVigor(
   return { hydration, condition, pests, care, total: Math.max(0, Math.min(100, total)) };
 }
 
+/**
+ * Score a quick health check from the updated plant.
+ *
+ * The wizard does not load treatments or the full care history. Passing those
+ * missing lists into calculateVigor scores them as empty, which writes pest
+ * pressure 100 and care 40 over an active disease. Keep the saved factors.
+ * Hydration and condition still follow the plant the gardener just described.
+ */
+export function healthCheckBreakdown(
+  plant: Inhabitant,
+  waterLogs: VigorEvent[] = []
+): VigorBreakdown {
+  const prev = (plant as any).vigorBreakdown as VigorBreakdown | undefined;
+  const hydration = scoreHydration(plant, waterLogs);
+  const condition = scoreCondition(plant);
+  const pests = typeof prev?.pests === 'number' ? prev.pests : scorePests(plant, []);
+  const care = typeof prev?.care === 'number' ? prev.care : scoreCare(plant, waterLogs);
+  const total = Math.round(hydration * 0.3 + condition * 0.3 + pests * 0.25 + care * 0.15);
+  return { hydration, condition, pests, care, total: Math.max(0, Math.min(100, total)) };
+}
+
 /** Average vigor across a set of plants; null when none have a score (renders as "—"). */
 export function averageVigor(plants: Inhabitant[]): number | null {  const scored = plants.filter((p) => typeof p.vigorIndex === 'number');
   if (scored.length === 0) return null;

@@ -5,7 +5,7 @@ import { cn } from '@/src/lib/utils';
 import { logEvent } from '../services/eventService';
 import { db, doc, updateDoc, serverTimestamp } from '../firebase';
 import { useFirebase } from '../contexts/FirebaseContext';
-import { calculateVigor, scoreHealthSnapshot, type HealthCheckAnswers } from '../lib/vigor';
+import { healthCheckBreakdown, scoreHealthSnapshot, type HealthCheckAnswers } from '../lib/vigor';
 import type { Inhabitant } from '../types';
 import { toast } from 'sonner';
 
@@ -92,9 +92,10 @@ export default function HealthCheckWizard({ plant, onClose, onDone, onLogTreatme
         lastWatered: full.watered === 'yes' ? new Date().toISOString() : plant.lastWatered,
       };
 
-      // Engine recompute on the updated plant, then blend the snapshot in at 30%:
-      // the check updates the score, it doesn't replace it.
-      const calc = calculateVigor(nextPlant as Inhabitant, waterLogs, undefined as any);
+      // Recompute hydration and condition from this check. Pest pressure and care
+      // momentum stay as saved — this wizard never loaded treatments or the
+      // full care log, and an empty list would record "no pests".
+      const calc = healthCheckBreakdown(nextPlant as Inhabitant, waterLogs);
       const base = before ?? calc.total;
       const after = Math.round(base * 0.7 + snapshot * 0.3);
 
