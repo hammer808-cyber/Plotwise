@@ -4,6 +4,7 @@ import { X, ArrowRight, ArrowLeft, Check, Search, Sun, Leaf, Sprout, Loader2 } f
 import { PLANT_DATABASE, PlantInfo } from '../constants/plants';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { db, collection, addDoc, serverTimestamp, handleFirestoreError, OperationType } from '../firebase';
+import { findFreeBedSpot } from '../lib/bedGeometry';
 import { toast } from 'sonner';
 import { cn } from '@/src/lib/utils';
 import PlantImage from './PlantImage';
@@ -90,19 +91,23 @@ export default function BedBuildQuiz({ plotId, plotName, plotCols, plotRows, exi
       const w = Math.max(1, Math.min(maxW, Math.round(Number(widthFt) || 4)));
       const h = Math.max(1, Math.min(maxH, Math.round(Number(depthFt) || 8)));
 
-      // Find the first free spot scanning top-left to bottom-right so new
-      // beds don't stack on top of existing ones.
-      const overlaps = (x: number, y: number) =>
-        existingBeds.some(b =>
-          x < b.gridPosition.x + b.size.w && x + w > b.gridPosition.x &&
-          y < b.gridPosition.y + b.size.h && y + h > b.gridPosition.y
-        );
-      let spot = { x: 0, y: 0 };
-      let found = false;
-      for (let y = 0; y <= plotRows - h && !found; y++) {
-        for (let x = 0; x <= plotCols - w && !found; x++) {
-          if (!overlaps(x, y)) { spot = { x, y }; found = true; }
-        }
+      // First free spot, top-left to bottom-right. If nothing fits, stop —
+      // the old fallback of (0, 0) stacked the new bed on the first one.
+      const spot = findFreeBedSpot(
+        { w, h },
+        plotCols,
+        plotRows,
+        existingBeds.map((b) => ({
+          x: b.gridPosition.x,
+          y: b.gridPosition.y,
+          w: b.size.w,
+          h: b.size.h,
+        }))
+      );
+      if (!spot) {
+        toast.warning('No room for that bed — shrink it, or move a bed to make space.');
+        setIsSaving(false);
+        return;
       }
 
       // 1. Create the bed (planter) inside this plot
