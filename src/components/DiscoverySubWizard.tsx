@@ -5,6 +5,7 @@ import { cn } from '@/src/lib/utils';
 import { toast } from 'sonner';
 import { db, collection, addDoc, serverTimestamp } from '../firebase';
 import { useFirebase } from '../contexts/FirebaseContext';
+import { buildTaxonomyDoc } from '../lib/taxonomy';
 
 interface DiscoverySubWizardProps {
   isOpen: boolean;
@@ -39,10 +40,16 @@ export default function DiscoverySubWizard({ isOpen, onClose, onDiscovery, type 
     if (videoRef.current && canvasRef.current) {
       const context = canvasRef.current.getContext('2d');
       if (context) {
-        canvasRef.current.width = videoRef.current.videoWidth;
-        canvasRef.current.height = videoRef.current.videoHeight;
-        context.drawImage(videoRef.current, 0, 0);
-        const dataUrl = canvasRef.current.toDataURL('image/png');
+        // Phone frames are multi-megabyte PNGs. Firestore rejects a document
+        // over 1 MiB, so the whole discovery save failed. Keep a small JPEG.
+        const MAX_DIM = 640;
+        const srcW = videoRef.current.videoWidth || 640;
+        const srcH = videoRef.current.videoHeight || 480;
+        const scale = Math.min(1, MAX_DIM / Math.max(srcW, srcH));
+        canvasRef.current.width = Math.max(1, Math.round(srcW * scale));
+        canvasRef.current.height = Math.max(1, Math.round(srcH * scale));
+        context.drawImage(videoRef.current, 0, 0, canvasRef.current.width, canvasRef.current.height);
+        const dataUrl = canvasRef.current.toDataURL('image/jpeg', 0.72);
         setCapturedImage(dataUrl);
         
         // Stop camera
@@ -75,14 +82,15 @@ export default function DiscoverySubWizard({ isOpen, onClose, onDiscovery, type 
 
     try {
       const newSpecies = {
-        name,
-        type,
-        threat: type === 'weed' ? threat : undefined,
-        icon: type === 'weed' ? '🌿' : '🌱',
-        discoveredBy: user.uid,
+        ...buildTaxonomyDoc({
+          name,
+          type,
+          threat,
+          icon: type === 'weed' ? '🌿' : '🌱',
+          discoveredBy: user.uid,
+          imageUrl: capturedImage,
+        }),
         discoveredAt: serverTimestamp(),
-        imageUrl: capturedImage,
-        isCustom: true
       };
 
       await addDoc(collection(db, 'custom_taxonomy'), newSpecies);
