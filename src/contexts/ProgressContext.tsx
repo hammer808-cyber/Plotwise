@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { db, collection, query, where, onSnapshot, doc, getDoc, setDoc, updateDoc, increment, serverTimestamp } from '../firebase';
 import { useFirebase } from './FirebaseContext';
+import { newProgressDocument } from '../lib/wizardWrites';
 
 interface UserProgress {
   xp: number;
@@ -38,15 +39,13 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
         setProgress(docSnap.data() as UserProgress);
       } else {
         // Initialize progress if it doesn't exist
-        const initialProgress: UserProgress = {
-          xp: 0,
-          level: 1,
-          streak: 0,
-          lastEventDate: null,
-          totalEvents: 0,
-        };
-        setDoc(progressRef, initialProgress);
-        setProgress(initialProgress);
+        // lastEventDate is omitted: rules require a string, and null is rejected,
+        // so the progress doc never existed and later XP updates had nothing to hit.
+        const initialProgress = newProgressDocument();
+        setDoc(progressRef, initialProgress).catch((error) => {
+          console.error('progress init failed', error);
+        });
+        setProgress({ ...initialProgress, lastEventDate: null });
       }
     });
 
@@ -60,10 +59,13 @@ export const ProgressProvider: React.FC<{ children: React.ReactNode }> = ({ chil
     const today = new Date().toISOString().split('T')[0];
     
     const docSnap = await getDoc(progressRef);
-    const currentData = docSnap.data() as UserProgress;
-    
-    let newStreak = currentData.streak || 0;
-    if (currentData.lastEventDate) {
+    if (!docSnap.exists()) {
+      await setDoc(progressRef, newProgressDocument());
+    }
+    const currentData = docSnap.data() as UserProgress | undefined;
+
+    let newStreak = currentData?.streak || 0;
+    if (currentData?.lastEventDate) {
       const lastDate = new Date(currentData.lastEventDate);
       const diffTime = Math.abs(new Date(today).getTime() - lastDate.getTime());
       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));

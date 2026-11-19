@@ -7,6 +7,7 @@ import { useProgress } from '../contexts/ProgressContext';
 import { logEvent } from '../services/eventService';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { toast } from 'sonner';
+import { wizardTreatmentRecord, wizardWeedingRecord } from '../lib/wizardWrites';
 
 interface MasterWizardProps {
   type: string;
@@ -20,51 +21,56 @@ const MasterWizard: React.FC<MasterWizardProps> = ({ type, onClose }) => {
 
   const handleWeedingSave = async (data: any) => {
     if (!user) return;
-    
+
     try {
+      // The global action button launches this wizard with no plot. Spreading
+      // that payload writes undefined plot fields (the client rejects the whole
+      // add) and a numeric canopy score the weeding_events rules do not allow.
+      const record = wizardWeedingRecord(data);
+      const place = (record.zone as string) || 'Garden';
       await logEvent({
         ownerUid: user.uid,
         category: 'weeding_events',
-        data: {
-          ...data,
-          xpEarned: data.xp,
-        },
-        calendarTitle: `Weeding: ${data.weedType} in ${data.plotName || 'Garden'}`,
-        calendarDescription: `Cleared ${data.areaCleared} sq ft of ${data.weedType} using ${data.method}. WEQ: ${data.weq.toFixed(2)}`,
+        data: record,
+        calendarTitle: `Weeding: ${record.weedType} in ${place}`.slice(0, 190),
+        calendarDescription: `Cleared ${data.areaCleared ?? 0} sq ft of ${record.weedType} using ${data.method || 'an unspecified method'}. WEQ: ${Number(data.weq || 0).toFixed(2)}`.slice(0, 1900),
         eventType: 'Weeding',
-        targetId: data.plotId,
-        targetType: 'SpatialPlot'
+        ...(typeof record.plotId === 'string'
+          ? { targetId: record.plotId, targetType: 'SpatialPlot' as const }
+          : {}),
       });
-      
-      await addXP(data.xp);
+
+      await addXP(Number(record.xp) || 0);
       onClose();
     } catch (error) {
-      console.error("Error logging weeding event:", error);
+      console.error('Error logging weeding event:', error);
+      toast.error('Could not save that weeding log.');
     }
   };
 
   const handleTreatmentSave = async (data: any) => {
     if (!user) return;
-    
+
     try {
+      const record = wizardTreatmentRecord(data);
+      const place = (record.plotName as string) || 'Garden';
       await logEvent({
         ownerUid: user.uid,
         category: 'treatment_events',
-        data: {
-          ...data,
-          xpEarned: data.xp,
-        },
-        calendarTitle: `Treatment: ${data.treatment} in ${data.plotName || 'Garden'}`,
-        calendarDescription: `Diagnosis: ${data.diagnosis}. Dosage: ${data.dosage}x. Notes: ${data.notes}`,
+        data: record,
+        calendarTitle: `Treatment: ${record.treatment} in ${place}`.slice(0, 190),
+        calendarDescription: `Diagnosis: ${record.diagnosis}. Dosage: ${record.dosage ?? 1}x. Notes: ${record.notes || ''}`.slice(0, 1900),
         eventType: 'Treatment',
-        targetId: data.plotId,
-        targetType: 'SpatialPlot'
+        ...(typeof record.plotId === 'string'
+          ? { targetId: record.plotId, targetType: 'SpatialPlot' as const }
+          : {}),
       });
-      
-      await addXP(data.xp);
+
+      await addXP(Number(record.xp) || 0);
       onClose();
     } catch (error) {
-      console.error("Error logging treatment event:", error);
+      console.error('Error logging treatment event:', error);
+      toast.error('Could not save that treatment log.');
     }
   };
 
