@@ -430,7 +430,7 @@ service cloud.firestore {
         data.ownerUid == request.auth.uid &&
         data.title is string && data.title.size() > 0 && data.title.size() < 200 &&
         data.date is string && data.date.matches("^\\d{4}-\\d{2}-\\d{2}$") &&
-        data.type in ['Manual', 'Watering', 'Fertilizing', 'Pruning', 'Harvesting', 'Pest Control', 'Soil Amendment', 'Propagation', 'Task', 'Treatment', 'Weeding'] &&
+        data.type in ['Manual', 'Watering', 'Fertilizing', 'Pruning', 'Harvesting', 'Pest Control', 'Soil Amendment', 'Propagation', 'Task', 'Treatment', 'Weeding', 'Health Check'] &&
         data.createdAt is timestamp &&
         (!('description' in data) || (data.description is string && data.description.size() < 2000)) &&
         (!('priority' in data) || data.priority in ['Low', 'Medium', 'High']) &&
@@ -510,7 +510,7 @@ service cloud.firestore {
       return hasRequiredFields(['ownerUid', 'targetId', 'type', 'date', 'createdAt']) &&
         data.ownerUid == request.auth.uid &&
         data.targetId is string &&
-        data.type in ["Treatment", "Weeding", "Observation", "Fertilizing", "Watering", "Harvest", "Task"] &&
+        data.type in ["Treatment", "Weeding", "Observation", "Fertilizing", "Watering", "Harvest", "Task", "Health Check"] &&
         data.date is string &&
         data.createdAt is timestamp &&
         (!('targetType' in data) || data.targetType in ["Inhabitant", "SpatialPlot"]) &&

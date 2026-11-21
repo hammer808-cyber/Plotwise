@@ -6,6 +6,7 @@ import { logEvent } from '../services/eventService';
 import { db, doc, updateDoc, serverTimestamp } from '../firebase';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { calculateVigor, scoreHealthSnapshot, type HealthCheckAnswers } from '../lib/vigor';
+import { buildHealthCheckLog, buildWateringCheckLog } from '../lib/quickCheckLogs';
 import type { Inhabitant } from '../types';
 import { toast } from 'sonner';
 
@@ -51,23 +52,14 @@ export default function HealthCheckWizard({ plant, onClose, onDone, onLogTreatme
       // Q1 "yes" is a real watering — log it as one so hydration history stays honest.
       const waterLogs: any[] = [];
       if (full.watered === 'yes') {
-        const w = await logEvent({
+        const watering = buildWateringCheckLog({
           ownerUid: user.uid,
-          category: 'event_logs',
-          eventType: 'Watering',
-          data: {
-            targetId: plant.id,
-            targetType: 'Inhabitant',
-            type: 'Watering',
-            plotId: plant.plotId || null,
-            notes: `Watered during quick health check`,
-            date: new Date().toISOString(),
-          },
-          calendarTitle: `Watered: ${plant.name}`,
-          calendarDescription: `Hydration logged from a quick health check.`,
+          plantId: plant.id,
+          plantName: plant.name,
+          plotId: plant.plotId,
         });
-        void w;
-        waterLogs.push({ type: 'Watering', targetId: plant.id, date: new Date().toISOString() });
+        await logEvent(watering);
+        waterLogs.push({ type: 'Watering', targetId: plant.id, date: watering.data.date });
       }
 
       // Status follows the gardener's read: struggling overall, or pests/disease spotted.
@@ -110,25 +102,17 @@ export default function HealthCheckWizard({ plant, onClose, onDone, onLogTreatme
       });
 
       // The check itself is an event — structured, queryable later.
-      await logEvent({
+      await logEvent(buildHealthCheckLog({
         ownerUid: user.uid,
-        category: 'event_logs',
-        eventType: 'Health Check',
-        data: {
-          targetId: plant.id,
-          targetType: 'Inhabitant',
-          type: 'Health Check',
-          plotId: plant.plotId || null,
-          notes: checkNote,
-          date: new Date().toISOString(),
-          answers: full,
-          snapshot,
-          vigorBefore: before,
-          vigorAfter: after,
-        },
-        calendarTitle: `Health check: ${plant.name}`,
-        calendarDescription: checkNote,
-      });
+        plantId: plant.id,
+        plantName: plant.name,
+        plotId: plant.plotId,
+        notes: checkNote,
+        answers: full,
+        snapshot,
+        vigorBefore: before,
+        vigorAfter: after,
+      }));
 
       setResult({ snapshot, before, after });
       onDone?.(after);
