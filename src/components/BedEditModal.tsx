@@ -6,6 +6,7 @@ import { motion } from 'motion/react';
 import { X, Check, Minus, Plus } from 'lucide-react';
 import { cn } from '@/src/lib/utils';
 import type { Inhabitant } from '../types';
+import { placementAfterShrink } from '../lib/bedShrink';
 
 /** Minimal bed shape — works with PlotDetail's Planter and BedDetail's Bed. */
 export interface BedLike {
@@ -121,27 +122,38 @@ export default function BedEditModal({ bed, cols, rows, otherBeds, plants, onClo
         color,
       });
 
-      // Pull riders back inside the new footprint (shrinking orphans edge plants).
+      // Plants that belong to this bed and no longer fit go back to the rail.
+      // Clamping them onto the new edge stacked every dropped plant on one cell.
       const bx = bed.gridPosition.x;
       const by = bed.gridPosition.y;
-      const riders = plants.filter(
-        (p) =>
-          p.planterId === bed.id ||
-          (!p.planterId &&
-            p.gridPosition &&
-            p.gridPosition.x >= bx &&
-            p.gridPosition.x < bx + bed.size.w &&
-            p.gridPosition.y >= by &&
-            p.gridPosition.y < by + bed.size.h)
-      );
-      for (const r of riders) {
-        const rx = Math.max(bx, Math.min(bx + w - 1, r.gridPosition?.x ?? bx));
-        const ry = Math.max(by, Math.min(by + h - 1, r.gridPosition?.y ?? by));
-        if (rx !== r.gridPosition?.x || ry !== r.gridPosition?.y || r.planterId !== bed.id) {
-          await updateDoc(doc(db, 'inhabitants', r.id), {
-            gridPosition: { x: rx, y: ry },
-            planterId: bed.id,
-          });
+      for (const r of plants) {
+        if (!r.id) continue;
+        if (r.planterId === bed.id) {
+          const decision = placementAfterShrink(r, bed, w, h);
+          if (decision.action === 'release') {
+            const { id: _id, action: _action, ...fields } = decision;
+            await updateDoc(doc(db, 'inhabitants', r.id), fields);
+          }
+          continue;
+        }
+        // Unassigned plants that already sit inside the old footprint keep the
+        // previous editor behavior.
+        if (
+          !r.planterId &&
+          r.gridPosition &&
+          r.gridPosition.x >= bx &&
+          r.gridPosition.x < bx + bed.size.w &&
+          r.gridPosition.y >= by &&
+          r.gridPosition.y < by + bed.size.h
+        ) {
+          const rx = Math.max(bx, Math.min(bx + w - 1, r.gridPosition.x));
+          const ry = Math.max(by, Math.min(by + h - 1, r.gridPosition.y));
+          if (rx !== r.gridPosition.x || ry !== r.gridPosition.y || r.planterId !== bed.id) {
+            await updateDoc(doc(db, 'inhabitants', r.id), {
+              gridPosition: { x: rx, y: ry },
+              planterId: bed.id,
+            });
+          }
         }
       }
 
