@@ -18,6 +18,7 @@ import HealthCheckWizard from './HealthCheckWizard';
 import { getPlantInfo } from '../constants/plants';
 import PlantPhotoLog from './PlantPhotoLog';
 import { PLANT_PLACEHOLDER } from '../lib/plantImage';
+import { taskCalendarRecord, taskHistoryRecord } from '../lib/taskCompletion';
 
 export default function PlantDetail() {
   const { user } = useFirebase();
@@ -285,7 +286,7 @@ export default function PlantDetail() {
   };
 
   const handleToggleTask = async (task: any) => {
-    if (!user || migratingTasks.has(task.id)) return;
+    if (!user || !plant || !id || migratingTasks.has(task.id)) return;
 
     setMigratingTasks(prev => new Set(prev).add(task.id));
     const toastId = toast.loading(`Migrating "${task.task}" to history...`);
@@ -296,22 +297,21 @@ export default function PlantDetail() {
         const calendarRef = doc(collection(db, 'calendar_events'));
         const historyRef = doc(collection(db, 'task_history'));
 
-        // 1. Create Calendar Event
+        const completedAt = serverTimestamp();
+        // Calendar rules require date (YYYY-MM-DD) and type Task. start/end
+        // are not a substitute, so this write used to fail the whole transaction.
         transaction.set(calendarRef, {
-          ownerUid: user.uid,
-          title: `Completed: ${task.task}`,
-          start: new Date().toISOString(),
-          end: new Date().toISOString(),
-          allDay: true,
-          category: task.category || 'Maintenance',
-          description: `Task completed for plant: ${plant.name}`,
-          plotId: plant.plotId || null,
+          ...taskCalendarRecord({
+            ownerUid: user.uid,
+            task: task.task,
+            description: `Task completed for plant: ${plant.name}`,
+            createdAt: completedAt,
+            plotId: plant.plotId || null,
+          }),
           plantId: id,
-          createdAt: serverTimestamp()
         });
 
-        // 2. Add to Task History
-        transaction.set(historyRef, {
+        transaction.set(historyRef, taskHistoryRecord({
           ownerUid: user.uid,
           taskId: task.id,
           task: task.task,
@@ -319,9 +319,8 @@ export default function PlantDetail() {
           plantId: id,
           plantName: plant.name,
           category: task.category || 'Maintenance',
-          completionDate: serverTimestamp(),
-          status: 'Completed'
-        });
+          completionDate: completedAt,
+        }));
 
         // 3. Delete from active tasks
         transaction.delete(taskRef);

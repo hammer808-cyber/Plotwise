@@ -62,6 +62,7 @@ import {
 import { cn } from '@/src/lib/utils';
 import { logEvent } from '../services/eventService';
 import { db, collection, query, where, onSnapshot, addDoc, updateDoc, deleteDoc, doc, getDoc, getDocs, handleFirestoreError, OperationType, setDoc, deleteField, batchDelete, runTransaction, serverTimestamp } from '../firebase';
+import { completedTaskTitle, taskHistoryRecord } from '../lib/taskCompletion';
 import { useFirebase } from '../contexts/FirebaseContext';
 import { GoogleGenAI, Type } from "@google/genai";
 import { toast } from 'sonner';
@@ -972,17 +973,19 @@ export default function PlotDetail() {
         category: 'task_history',
         eventType: 'Task',
         data: {
-          taskId: task.id,
-          task: task.task,
-          plotId: plotId,
+          ...taskHistoryRecord({
+            ownerUid: user.uid,
+            taskId: task.id,
+            task: task.task,
+            plotId: plotId,
+            plantId: task.plantId || null,
+            plantName: task.plantName || null,
+            category: task.category || 'Maintenance',
+            completionDate: serverTimestamp(),
+          }),
           plotName: plot?.name || 'Unknown',
-          plantId: task.plantId || null,
-          plantName: task.plantName || null,
-          category: task.category || 'Maintenance',
-          status: 'Completed',
-          timestamp: new Date().toISOString()
         },
-        calendarTitle: `Completed: ${task.task} (${plot?.name || 'Plot'})`,
+        calendarTitle: completedTaskTitle(task.task, plot?.name || 'Plot'),
         calendarDescription: `Task completed in plot: ${plot?.name || 'Unknown'}`
       });
 

@@ -30,6 +30,7 @@ import {
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'motion/react';
 import { logEvent } from '../services/eventService';
+import { completedTaskTitle, taskHistoryRecord } from '../lib/taskCompletion';
 import { sendToInventorySync } from '../services/inventoryService';
 import CheckmarkCelebration from './CheckmarkCelebration';
 import { db, collection, query, where, onSnapshot, addDoc, deleteDoc, doc, handleFirestoreError, OperationType, serverTimestamp } from '../firebase';
@@ -211,17 +212,17 @@ export default function Financials() {
         ownerUid: user.uid,
         category: 'task_history',
         eventType: 'Task',
-        data: {
+        data: taskHistoryRecord({
+          ownerUid: user.uid,
           taskId: task.id,
           task: task.task,
           plotId: task.plotId || null,
           plantId: task.plantId || null,
           plantName: task.plantName || null,
           category: task.frequency,
-          status: 'Archive',
-          timestamp: new Date().toISOString()
-        },
-        calendarTitle: `COMPLETED: ${task.task}`,
+          completionDate: serverTimestamp(),
+        }),
+        calendarTitle: completedTaskTitle(task.task),
         calendarDescription: `Task migration from Must-Dos. Frequency: ${task.frequency}`
       });
 
