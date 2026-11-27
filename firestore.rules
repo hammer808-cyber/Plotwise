@@ -580,6 +580,18 @@ service cloud.firestore {
         (!('xpEarned' in data) || data.xpEarned is number);
     }
 
+    function isValidEquipment(data) {
+      return hasRequiredFields(['ownerUid', 'name', 'category', 'condition', 'quantity', 'createdAt']) &&
+        data.ownerUid == request.auth.uid &&
+        data.name is string && data.name.size() > 0 && data.name.size() < 200 &&
+        data.category in ['Tools', 'Irrigation', 'Soil', 'Pest Control', 'Safety'] &&
+        data.condition in ['New', 'Good', 'Fair', 'Poor'] &&
+        data.quantity is number && data.quantity >= 0 && data.quantity <= 100000 &&
+        data.createdAt is timestamp &&
+        (!('notes' in data) || (data.notes is string && data.notes.size() < 5000)) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
     // ===============================================================
     // Match Rules
     // ===============================================================
@@ -792,6 +804,15 @@ service cloud.firestore {
       allow read: if isDocOwner() || isAdmin();
       allow create: if isAuthenticated() && request.resource.data.ownerUid == request.auth.uid;
       allow update: if (isDocOwner() && uidNotModified()) || isAdmin();
+      allow delete: if isDocOwner() || isAdmin();
+    }
+
+    // Tools & Equipment on My Plants. Without this match the recursive deny
+    // rejects the owner-scoped list and every add/edit/delete.
+    match /equipment/{equipmentId} {
+      allow read: if isDocOwner() || isAdmin();
+      allow create: if isAuthenticated() && isValidEquipment(request.resource.data);
+      allow update: if (isDocOwner() && isValidEquipment(request.resource.data) && uidNotModified()) || isAdmin();
       allow delete: if isDocOwner() || isAdmin();
     }
 
