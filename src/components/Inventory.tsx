@@ -8,6 +8,7 @@ import { useActivePlot } from '../contexts/ActivePlotContext';
 import { db, collection, query, where, onSnapshot, handleFirestoreError, OperationType, addDoc, serverTimestamp, deleteDoc, doc, deleteField, batchDelete } from '../firebase';
 import { getPlantInfo, PLANT_DATABASE } from '../constants/plants';
 import { PLANT_PLACEHOLDER } from '../lib/plantImage';
+import { coerceInhabitantType, INHABITANT_TYPES } from '../lib/inhabitantEdit';
 import { Inhabitant, SpatialPlot, EventLog } from '../types';
 import { calculateVigorIndex } from '../lib/botany';
 import { Trash2, CheckSquare, Square, Table, LayoutGrid, ExternalLink, X, MapPin, Edit2, Download, CheckCircle, Plus, ChevronUp, ChevronDown, Activity, Droplets as WaterIcon, Bug, Sun, Stethoscope } from 'lucide-react';
@@ -145,7 +146,7 @@ export default function Inventory() {
 
   const handleEditPlant = (plant: any, e: React.MouseEvent) => {
     e.stopPropagation();
-    setEditingPlant({ ...plant });
+    setEditingPlant({ ...plant, type: coerceInhabitantType(plant.type) });
     setIsEditModalOpen(true);
   };
 
@@ -156,7 +157,7 @@ export default function Inventory() {
       await updateDoc(doc(db, 'inhabitants', editingPlant.id), {
         name: editingPlant.name,
         scientific: editingPlant.scientific || '',
-        type: editingPlant.type,
+        type: coerceInhabitantType(editingPlant.type),
         waterFreq: editingPlant.waterFreq,
         sunExposure: editingPlant.sunExposure,
         notes: editingPlant.notes || '',
@@ -1215,11 +1216,9 @@ export default function Inventory() {
                         onChange={(e) => setEditingPlant({ ...editingPlant, type: e.target.value })}
                         className="w-full bg-surface-container-low border-none rounded-2xl px-6 py-4 font-bold focus:ring-2 focus:ring-primary/20 transition-all appearance-none"
                       >
-                        <option value="Herb">Herb</option>
-                        <option value="Vegetable">Vegetable</option>
-                        <option value="Fruit">Fruit</option>
-                        <option value="Flower">Flower</option>
-                        <option value="Succulent">Succulent</option>
+                        {INHABITANT_TYPES.map((type) => (
+                          <option key={type} value={type}>{type}</option>
+                        ))}
                       </select>
                     </div>
                     <div className="space-y-2">
